@@ -126,7 +126,7 @@ def ABPG(f, h, L, x0, gamma, maxitrs, epsilon=1e-14, theta_eq=False,
     
     x = np.copy(x0)
     z = np.copy(x0)
-    theta = 1.0     # initialize theta = 1 for updating with equality 
+    theta = 1.0      # initialize theta = 1 for updating with equality 
     kk = 0          # separate counter for theta_k, easy for restart
     for k in range(maxitrs):
         # function value at previous iteration

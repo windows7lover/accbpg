@@ -6,6 +6,136 @@ import numpy as np
 import time
 
 
+
+def ABRA_GD(f, h, L, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=1):
+    """
+    Adaptive Bregman Accelerated Gradient Descent method with gain adaption for 
+            minimize_{x in C} f(x) + Psi(x): 
+    
+    Inputs:
+        f, h, L:  f is L-smooth relative to h, and Psi is defined within h
+        x0:       initial point to start algorithm
+        G0:       initial value for triangle scaling gain
+        maxitrs:  maximum number of iterations
+        epsilon:  stop if D_h(z[k],z[k-1]) < epsilon
+        ls_inc:   factor of increasing gain (>=1)
+        ls_dec:   factor of decreasing gain (>=1)
+        theta_eq: calculate theta_k by solving equality using Newton's method
+        checkdiv: check triangle scaling inequality for adaption (True/False)
+        restart:  restart the algorithm when overshooting (True/False)
+        restart_rule: 'f' for function increasing or 'g' for gradient angle
+        verbose:  display computational progress (True/False)
+        verbskip: number of iterations to skip between displays
+
+    Returns (x, Fx, Ls):
+        x:  the last iterate of BPG
+        F:  array storing F(x[k]) for all k
+        tk: triangle scaling gains G_k obtained by LS at each iteration
+        etak: triangle scaling gains D(xk,yk)/D(zk,zk_1)/theta_k^gamma_k
+        T:  array storing time used up to iteration k
+    """
+    if verbose:
+        print("\nABRA_GD method for min_{x in C} F(x) = f(x) + Psi(x)")
+        print("     k      F(x)       theta         Gk" + 
+              "         TSG       D(x+,y)     D(z+,z)      Gavg       time")
+
+    start_time = time.time()    
+    F = np.zeros(maxitrs)
+    tk = np.zeros(maxitrs)
+    etak = np.zeros(maxitrs)
+    T = np.zeros(maxitrs)
+    
+    x = np.copy(x0)
+    dx0 = h.gradient(x0)
+    
+    current_c = 1
+    
+    def positive_tk(eta_k, mu, L, c):
+        alpha_k = mu + 1/eta_k
+        disc = (mu - alpha_k)**2 + 4.0 * L * c * alpha_k
+        return ((mu - alpha_k) + math.sqrt(disc)) / (2.0 * L * c)
+    
+    for k in range(maxitrs):
+        
+        if k ==0:
+            xplus = x0
+            zplus = np.copy(x0)
+            lambda_plus = np.copy(x0*0.0)
+            eta_plus = inf 
+            currentL = max(L, mu)
+            phi_plus = f.func_grad(x0)
+            
+        elif k == 1: # Do a basic gradient descent / DA step
+            
+        else:
+        
+            # Backtracking over c and L - divide it by 2
+            currentL = max(current_L / 2.0, mu)
+            current_c = max(current_c / 2.0, 1.0)
+            
+            sufficient_decrease = False
+            while not sufficient_decrease:
+            
+                # Update tj then iterates
+                tk = positive_tk(eta_k, mu, L, current_c)
+                (xplus,zplus,lambda_plus,philowk,phi_plus,eta_plus,currentL) = BregPDStep(x, z, lambdak, etak, tk, mu, f, D, dx0, currentL)
+                
+                sufficient_decrease = phi_plus-( (1-tk)*fx + tk*philowk ) <= -(mu + 1/eta_plus)*h.divergence(zk,zplus)
+                
+                if not sufficient_decrease: # Unsuccesful attempt
+                    current_c = current_c*2.0
+                    
+        # Copy new variable into old one
+        # c is already managed by the outer loop but L can change.
+        x, z, lambdak, etak, currentL, phi_xk = xplus, zplus, lambda_plus, eta_plus, currentL, phi_plus
+        
+        if verbose and k % verbskip == 0:
+            print("{0:6d}  {1:10.3e}  {2:10.3e}  {3:10.3e}  {4:10.3e}  {5:10.3e}  {6:10.3e}  {7:10.3e}  {8:6.1f}".format(
+                    k, F[k], theta, G, Gdr, dxy, dzz, Gavg[k], T[k]))
+
+        # stopping criteria
+        if dzz < epsilon:
+            break;
+
+    F = F[0:k+1]
+    T = T[0:k+1]
+    return x, F, Gain, Gdiv, Gavg, T
+    
+    
+def BregPDStep(x, z, lambdak, etak, tk, mu, f, D, dx0, currentL)
+
+    # New iterate y + oracle call
+    yk = (1-tk)*xk + tk*zk
+    fy, gy = f.func_grad(y)
+    dy = h.gradient(y) 
+    
+    # New Param candidates
+    eta_plus = etak/(1-tk)
+    alpha_plus = mu + 1/eta_plus
+    
+    # New candidates
+    lambda_plus = (1-tk)*lambdak + tk * (gy - mu*(dy-dx0) )
+    zplus = D.div_prox_map(x0, lambda_plus, alpha_plus)
+    (xplus, fplus, currentL) = backtracking_gradient(y, f, D, gy, fy, currentL)
+    
+    # Lower and upper models for phi for backtracking
+    philowk = fy + gy@(zk-yk) + mu * D.divergence(z, y)
+    
+    return (xplus,zplus,lambda_plus,philowk,fplus,eta_plus,currentL)
+
+def backtracking_gradient(y, f, D, gy, fy, currentL)
+    xplus = D.div_prox_map(y, gy, currentL)
+    fplus, gplus = f.func_grad(xplus)
+    
+    sufficient_decrease = (f(xplus)-fy) < -currentL*D.divergence(y, xplus)
+    while not sufficient_decrease:
+        currentL = currentL/2
+        xplus = D.div_prox_map(y, g, currentL)
+        sufficient_decrease = (f(xplus)-fy) < -currentL*D.divergence(y, xplus)
+        
+    return xplus, fplus, currentL
+        
+
 def BPG(f, h, L, x0, maxitrs, epsilon=1e-14, linesearch=True, ls_ratio=1.2,
         verbose=True, verbskip=1):
     """

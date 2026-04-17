@@ -38,7 +38,7 @@ def run_experiment(
     *,
     noise: float = 0.0,
     lamdaL1: float = 0.0,
-    normalizeA: bool = False,
+    normalizeA: bool = True,
     randseed: int = 1,
     maxitrs: int = 5000,
     verbskip: int = 1000,
@@ -75,8 +75,16 @@ def run_experiment(
         restart=True, restart_rule="f", verbskip=verbskip
     )
     xabra, Fabra, tk_abra, eta_abra, Tabra = accbpg.ABRA_GD(
-        f, h, L, x0, maxitrs=maxitrs, mu=0.0, epsilon=1e-14,
-        verbose=True, verbskip=verbskip
+        f, h, L, x0, maxitrs=maxitrs, mu=0.0, epsilon=1e-11,
+        restart=False, verbose=True, verbskip=verbskip
+    )
+    xabrag, Fabrag, tk_abrag, eta_abrag, Tabrag = accbpg.ABRA_GD(
+        f, h, L, x0, maxitrs=maxitrs, mu=0.0, epsilon=1e-11,
+        restart=True, restart_rule="g", verbose=True, verbskip=verbskip
+    )
+    xabraf, Fabraf, tk_abraf, eta_abraf, Tabraf = accbpg.ABRA_GD(
+        f, h, L, x0, maxitrs=maxitrs, mu=0.0, epsilon=1e-11,
+        restart=True, restart_rule="f", verbose=True, verbskip=verbskip
     )
 
     return {
@@ -88,15 +96,23 @@ def run_experiment(
         "ABPG_g": {"x": x2g, "F": F2g, "T": T2g},
         "ABPG_g_RS": {"x": x2grs, "F": F2grs, "T": T2grs},
         "ABRA_GD": {"x": xabra, "F": Fabra, "T": Tabra, "t": tk_abra, "eta": eta_abra},
+        "ABRA_GD_g_RS": {"x": xabrag, "F": Fabrag, "T": Tabrag, "t": tk_abrag, "eta": eta_abrag},
+        "ABRA_GD_f_RS": {"x": xabraf, "F": Fabraf, "T": Tabraf, "t": tk_abraf, "eta": eta_abraf},
     }
 
 
 def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str | None = None):
     fig, _ = plt.subplots(1, 2, figsize=(11, 4))
 
-    labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG RS", r"ABPG-g", r"ABPG-g RS", r"ABRA-GD"]
-    styles = ["k:", "g-", "b-.", "m-", "k-", "r--", "c-"]
-    dashes = [[1, 2], [], [4, 2, 1, 2], [4, 2, 1, 2, 1, 2], [], [4, 2], [6, 2]]
+    labels = [
+        r"BPG", r"BPG-LS", r"ABPG", r"ABPG RS", r"ABPG-g", r"ABPG-g RS",
+        r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"
+    ]
+    styles = ["k:", "g-", "b-.", "m-", "k-", "r--", "c-", "c--", "c:"]
+    dashes = [
+        [1, 2], [], [4, 2, 1, 2], [4, 2, 1, 2, 1, 2], [], [4, 2],
+        [6, 2], [2, 2], [1, 1]
+    ]
 
     y_vals = [
         results["BPG"]["F"],
@@ -106,6 +122,8 @@ def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str 
         results["ABPG_g"]["F"],
         results["ABPG_g_RS"]["F"],
         results["ABRA_GD"]["F"],
+        results["ABRA_GD_g_RS"]["F"],
+        results["ABRA_GD_f_RS"]["F"],
     ]
     t_vals = [
         results["BPG"]["T"],
@@ -115,6 +133,8 @@ def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str 
         results["ABPG_g"]["T"],
         results["ABPG_g_RS"]["T"],
         results["ABRA_GD"]["T"],
+        results["ABRA_GD_g_RS"]["T"],
+        results["ABRA_GD_f_RS"]["T"],
     ]
 
     ax1 = plt.subplot(1, 2, 1)

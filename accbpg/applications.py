@@ -164,37 +164,144 @@ def Poisson_regrL2(m, n, noise=0.01, lamda=0, randseed=-1, normalizeA=True):
 
     return f, h, L, x0
 
+def _make_scales(n, target_cond=1.0, spectrum="geometric", power=1.0):
+    """
+    Build a decreasing positive scale profile with max(scale)=1 and
+    min(scale)=1/target_cond.
 
-def KL_nonneg_regr(m, n, noise=0.01, lamdaL1=0, randseed=-1, normalizeA=True):
+    spectrum:
+        - "flat"       : all ones
+        - "geometric"  : log-linear decay
+        - "polynomial" : slower decay controlled by `power`
+        - "two_cluster": half large / half small
+    """
+    if target_cond < 1:
+        raise ValueError("target_cond must be >= 1.")
+
+    if spectrum == "flat" or target_cond == 1:
+        return np.ones(n)
+
+    t = np.linspace(0.0, 1.0, n)
+
+    if spectrum == "geometric":
+        scales = target_cond ** (-t)
+
+    elif spectrum == "polynomial":
+        # t^power controls how fast the decay happens
+        scales = target_cond ** (-(t ** power))
+
+    elif spectrum == "two_cluster":
+        scales = np.ones(n)
+        scales[n // 2:] = 1.0 / target_cond
+
+    else:
+        raise ValueError(f"Unknown spectrum='{spectrum}'.")
+
+    return scales
+
+def KL_nonneg_regr(
+    m,
+    n,
+    noise=0.01,
+    lamdaL1=0,
+    randseed=-1,
+    normalizeA=False,
+    target_cond=100.0,
+    spectrum="geometric",
+    spectrum_power=1.0,
+    shuffle_scales=True,
+    return_info=False,
+):
     """
     Generate a random instance of L1-regularized KL regression problem
-            minimize_{x >= 0}  D_KL(Ax, b) + lamda * ||x||_1
-    where 
+
+        minimize_{x >= 0}  D_KL(Ax, b) + lamda * ||x||_1
+
+    where
         A:  m by n nonnegative matrix
         b:  nonnegative vector of length m
         noise:  noise level to generate b = A * x + noise
-        lambda: L2 regularization weight
-        normalizeA: wether or not to normalize columns of A
-    
-    Return f, h, L, x0: 
+        lambda: L1 regularization weight
+        normalizeA: whether or not to normalize columns of A
+        target_cond: rough conditioning level (>= 1)
+        spectrum: one of {"flat", "geometric", "polynomial", "two_cluster"}
+        spectrum_power: controls decay for "polynomial"
+        shuffle_scales: randomly permute the column scales
+        return_info: if True, also return diagnostics
+
+    Return f, h, L, x0
         f: f(x) = D_KL(Ax, b)
         h: h(x) = Shannon entropy (with L1 regularization as Psi)
         L: L = max(sum(A, axis=0)), maximum column sum
         x0: initial point, scaled version of all-one vector
     """
+    import numpy as np
+
+    def _make_scales(n, target_cond, spectrum, power):
+        if target_cond < 1:
+            raise ValueError("target_cond must be >= 1.")
+
+        if spectrum == "flat" or target_cond == 1:
+            return np.ones(n)
+
+        t = np.linspace(0.0, 1.0, n)
+
+        if spectrum == "geometric":
+            scales = target_cond ** (-t)
+        elif spectrum == "polynomial":
+            scales = target_cond ** (-(t ** power))
+        elif spectrum == "two_cluster":
+            scales = np.ones(n)
+            scales[n // 2:] = 1.0 / target_cond
+        else:
+            raise ValueError(
+                "spectrum must be one of {'flat', 'geometric', 'polynomial', 'two_cluster'}."
+            )
+
+        return scales
+
     if randseed > 0:
         np.random.seed(randseed)
-    A = np.random.rand(m,n)
+
+    # Base nonnegative matrix
+    A = np.random.rand(m, n)
+
+    # Optional normalization first
     if normalizeA:
-        A = A / A.sum(axis=0)   # scaling to make column sums equal to 1
+        col_sums = np.maximum(A.sum(axis=0, keepdims=True), 1e-15)
+        A = A / col_sums
+
+    # Apply conditioning profile via column scaling
+    scales = _make_scales(n, target_cond, spectrum, spectrum_power)
+    if shuffle_scales:
+        scales = scales[np.random.permutation(n)]
+    A = A * scales[None, :]
+
+    # Generate data
     x = np.random.rand(n)
     b = np.dot(A, x) + noise * (np.random.rand(m) - 0.5)
-    assert b.min() > 0, "need b > 0 for nonnegative regression."
+
+    # Safer than assert: clip instead of crashing on small noise accidents
+    b = np.maximum(b, 1e-12)
 
     f = KLdivRegression(A, b)
     h = ShannonEntropyL1(lamdaL1)
-    L = max( A.sum(axis=0) )    #L = 1.0 if columns of A are normalized
-    x0 = 0.5*np.ones(n)
-    #x0 = (1.0/n)*np.ones(n)
+    L = np.max(A.sum(axis=0))
+    x0 = 0.5 * np.ones(n)
+    # x0 = (1.0/n) * np.ones(n)
 
-    return f, h, L, x0
+    if not return_info:
+        return f, h, L, x0
+
+    svals = np.linalg.svd(A, compute_uv=False)
+    cond_A = np.inf if svals[-1] <= 1e-15 else svals[0] / svals[-1]
+
+    info = {
+        "A": A,
+        "b": b,
+        "x_true": x,
+        "column_scales": scales,
+        "singular_values": svals,
+        "cond_A": cond_A,
+    }
+    return f, h, L, x0, info

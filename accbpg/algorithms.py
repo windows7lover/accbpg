@@ -73,6 +73,7 @@ def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x0, dx0, current_L, psi_z,
     One generic primal-dual Bregman step for k >= 1.
 
     Returns alpha_plus and dzz directly so ABRA_GD does not recompute them.
+    Also returns y, gy, dy so restart tests can reuse the same gradient data.
     """
     omt = 1.0 - t_k
 
@@ -99,11 +100,11 @@ def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x0, dx0, current_L, psi_z,
     psi_xplus = extra_Psi(xplus)
     phi_plus = fplus + psi_xplus
 
-    return xplus, zplus, lambda_plus, philowk, phi_plus, alpha_plus, dzz, current_L
+    return y, gy, dy, xplus, zplus, lambda_plus, philowk, phi_plus, alpha_plus, dzz, current_L
 
 
 def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=1,
-            max_backtracks=50, c_min=1.0):
+            max_backtracks=50, c_min=1.0, restart=False, restart_rule='g'):
     """
     Adaptive Bregman Accelerated Gradient Descent.
 
@@ -112,6 +113,10 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
     - caches psi_z = Psi(z_k) across the inner loop;
     - uses f(xplus) rather than func_grad(xplus) in backtracking;
     - tracks alpha_k directly, converts to eta_k only for history.
+
+    Optional restart resets the accelerated state around the accepted primal point.
+    restart_rule = 'g' uses a gradient-angle test; restart_rule = 'f' uses
+    an objective-based test on the accelerated candidate.
     """
     if L <= 0:
         raise ValueError("L must be positive.")
@@ -121,6 +126,8 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         raise ValueError("maxitrs must be positive.")
     if c_min <= 0:
         raise ValueError("c_min must be positive.")
+    if restart_rule not in ('g', 'f'):
+        raise ValueError("restart_rule must be either 'g' or 'f'.")
 
     # Local bindings: cheaper in Python loops than repeated attribute lookups.
     func_grad = f.func_grad
@@ -188,7 +195,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         while True:
             t_k = positive_tk(alpha_k, mu, current_L, current_c)
 
-            x_cand, zplus, lambda_plus, philowk, phi_cand, alpha_plus, dzz, current_L = BregPDStep(
+            y_cand, gy_cand, dy_cand, x_cand, zplus, lambda_plus, philowk, phi_cand, alpha_plus, dzz, current_L = BregPDStep(
                 x=x,
                 z=z,
                 lambdak=lambdak,
@@ -221,12 +228,31 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
 
             current_c *= 2.0
 
+        phi_prev = phi_x
+        x_prev = x
+
         x = xplus
         z = zplus
         lambdak = lambda_plus
         alpha_k = alpha_plus
         phi_x = phi_plus
         psi_z = extra_Psi(z)
+
+        if restart:
+            restart_now = False
+            if restart_rule == 'f':
+                restart_now = (phi_cand > phi_prev)
+            else:  # restart_rule == 'g'
+                restart_now = (np.dot(gy_cand, x_cand - x_prev) > 0.0)
+
+            if restart_now:
+                z = np.copy(x)
+                _, gx_restart = func_grad(x)
+                dx_restart = grad_h(x)
+                lambdak = gx_restart - mu * (dx_restart - dx0)
+                alpha_k = max(current_L, mu)
+                psi_z = extra_Psi(z)
+                current_c = max(1.0, c_min)
 
         F[k] = phi_x
         tk_hist[k] = t_k

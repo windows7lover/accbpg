@@ -40,7 +40,7 @@ def make_comparison_figure(y_vals, t_vals, labels, styles, dashes, *, iter_xlim,
 
     ax2 = plt.subplot(1, 2, 2)
     accbpg.plot_comparisons(
-        ax2, y_vals, labels, x_vals=t_vals, plotdiff=True, yscale="log", xscale="log", ylim=list(gap_ylim),
+        ax2, y_vals, labels, x_vals=t_vals, plotdiff=True, yscale="log", ylim=list(gap_ylim),
         xlabel="Time (s)", ylabel=r"$F(x_k)-F_\star$", legendloc=time_legend,
         linestyles=styles, linedash=dashes
     )

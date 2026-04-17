@@ -37,8 +37,8 @@ def run_experiment(
     n: int,
     *,
     noise: float = 0.01,
-    lamdaL1: float = 0.001,
-    normalizeA: bool = True,
+    lamdaL1: float = 0.000,
+    normalizeA: bool = False,
     randseed: int = 1,
     maxitrs: int = 5000,
     verbskip: int = 1000,
@@ -142,7 +142,6 @@ def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str 
         x_vals=t_vals,
         plotdiff=True,
         yscale="log",
-        xscale="log",
         ylim=list(gap_ylim),
         xlabel="Time (s)",
         ylabel=r"$F(x_k)-F_\star$",
@@ -164,19 +163,23 @@ def main():
     parser.add_argument("--save-dir", type=Path, default=None, help="Directory where figures will be saved.")
     parser.add_argument("--no-show", action="store_true", help="Do not display figures.")
     args = parser.parse_args()
-
-    results_1 = run_experiment(1000, 100, maxitrs=args.maxitrs, verbskip=args.verbskip)
+    
+    # Experiment 1
+    m, n = 1000, 100
+    results_1 = run_experiment(m, n, maxitrs=args.maxitrs, verbskip=args.verbskip)
     fig1 = plot_experiment(
         results_1,
         gap_ylim=(1e-6, 1e-1),
-        title="KL nonnegative regression: m=1000, n=100",
+        title=f"KL nonnegative regression: m={m}, n={n}",
     )
 
-    results_2 = run_experiment(100, 1000, maxitrs=args.maxitrs, verbskip=args.verbskip)
+    # Experiment 2
+    m, n = 100, 1000
+    results_2 = run_experiment(m, n, maxitrs=args.maxitrs, verbskip=args.verbskip)
     fig2 = plot_experiment(
         results_2,
         gap_ylim=(1e-10, 1e-1),
-        title="KL nonnegative regression: m=100, n=1000",
+        title=f"KL nonnegative regression: m={m}, n={n}",
     )
 
     if args.save_dir is not None:

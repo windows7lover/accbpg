@@ -6,44 +6,38 @@ import numpy as np
 import time
 import warnings
 
-def positive_tk(eta_k, mu, L, c):
+
+def positive_tk(alpha_k, mu, L, c):
     """
     Positive root of
-        (1 - t) * alpha_k + t * mu >= L * c * t^2,
-    where alpha_k = mu + 1 / eta_k and eta_k = +inf is allowed.
+        (1 - t) * alpha_k + t * mu >= L * c * t^2.
 
-    Returns the positive root clipped to [0, 1].
+    alpha_k is passed directly to avoid repeated eta->alpha conversion
+    inside the inner loop.
     """
     if L <= 0:
         raise ValueError("L must be positive.")
     if c <= 0:
         raise ValueError("c must be positive.")
+    if alpha_k < mu:
+        raise ValueError("alpha_k must satisfy alpha_k >= mu.")
 
-    if np.isinf(eta_k):
-        alpha_k = mu
-    else:
-        if eta_k <= 0:
-            raise ValueError("eta_k must be positive or +inf.")
-        alpha_k = mu + 1.0 / eta_k
-
-    # Degenerate case: alpha_k = mu = 0 => only t = 0 works.
     if alpha_k == 0.0 and mu == 0.0:
         return 0.0
 
-    disc = (mu - alpha_k) ** 2 + 4.0 * L * c * alpha_k
-    t_pos = ((mu - alpha_k) + math.sqrt(disc)) / (2.0 * L * c)
+    Lc = L * c
+    disc = (mu - alpha_k) * (mu - alpha_k) + 4.0 * Lc * alpha_k
+    t_pos = ((mu - alpha_k) + math.sqrt(disc)) / (2.0 * Lc)
     return min(1.0, max(0.0, t_pos))
 
 
-def backtracking_gradient(y, f, h, gy, fy, current_L, max_backtracks=50):
+def backtracking_gradient(y, fy, gy, current_L, f_eval, div_prox_map, divergence,
+                          max_backtracks=50):
     """
     Backtracking for the mirror/prox-gradient step.
 
-    Accept when
-        f(xplus) <= fy + <gy, xplus - y> + current_L * D_h(xplus, y).
-
-    If backtracking fails after max_backtracks attempts, emit a warning
-    and return the last trial as if it were accepted.
+    Uses only f(xplus), not func_grad(xplus), because the gradient at xplus
+    is not needed here.
     """
     if current_L <= 0:
         raise ValueError("current_L must be positive.")
@@ -54,13 +48,12 @@ def backtracking_gradient(y, f, h, gy, fy, current_L, max_backtracks=50):
     fplus = None
 
     for _ in range(max_backtracks):
-        xplus = h.div_prox_map(y, gy, current_L)
-        fplus, _ = f.func_grad(xplus)
+        xplus = div_prox_map(y, gy, current_L)
+        step = xplus - y
+        dxy = divergence(xplus, y)
+        fplus = f_eval(xplus)
 
-        sufficient_decrease = (
-            (fplus - fy) <= np.dot(gy, xplus - y) + current_L * h.divergence(xplus, y)
-        )
-        if sufficient_decrease:
+        if (fplus - fy) <= np.dot(gy, step) + current_L * dxy:
             return xplus, fplus, current_L
 
         current_L *= 2.0
@@ -74,52 +67,51 @@ def backtracking_gradient(y, f, h, gy, fy, current_L, max_backtracks=50):
     return xplus, fplus, current_L
 
 
-def BregPDStep(x, z, lambdak, eta_k, t_k, mu, f, h, x0, dx0, current_L):
+def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x0, dx0, current_L, psi_z,
+               func_grad, f_eval, grad_h, extra_Psi, div_prox_map, divergence):
     """
     One generic primal-dual Bregman step for k >= 1.
+
+    Returns alpha_plus and dzz directly so ABRA_GD does not recompute them.
     """
-    y = (1.0 - t_k) * x + t_k * z
-    fy, gy = f.func_grad(y)
-    dy = h.gradient(y)
+    omt = 1.0 - t_k
 
-    # eta_{k+1} = eta_k / (1 - t_k), preserving +inf.
-    if np.isinf(eta_k) or t_k >= 1.0:
-        eta_plus = np.inf
-    else:
-        eta_plus = eta_k / (1.0 - t_k)
+    y = x + t_k * (z - x)
+    fy, gy = func_grad(y)
+    dy = grad_h(y)
 
-    alpha_plus = mu if np.isinf(eta_plus) else mu + 1.0 / eta_plus
+    alpha_plus = omt * alpha_k + t_k * mu
     if alpha_plus <= 0:
         raise ValueError(
             "alpha_plus <= 0 in BregPDStep. "
             "The first step must be handled explicitly."
         )
 
-    lambda_plus = (1.0 - t_k) * lambdak + t_k * (gy - mu * (dy - dx0))
-    zplus = h.div_prox_map(x0, lambda_plus, alpha_plus)
+    lambda_plus = omt * lambdak + t_k * (gy - mu * (dy - dx0))
+    zplus = div_prox_map(x0, lambda_plus, alpha_plus)
+    dzz = divergence(zplus, z)
 
-    xplus, fplus, current_L = backtracking_gradient(y, f, h, gy, fy, current_L)
+    xplus, fplus, current_L = backtracking_gradient(
+        y, fy, gy, current_L, f_eval, div_prox_map, divergence
+    )
 
-    philowk = fy + np.dot(gy, z - y) + mu * h.divergence(z, y) + h.extra_Psi(z)
-    phi_plus = fplus + h.extra_Psi(xplus)
+    philowk = fy + np.dot(gy, z - y) + mu * divergence(z, y) + psi_z
+    psi_xplus = extra_Psi(xplus)
+    phi_plus = fplus + psi_xplus
 
-    return xplus, zplus, lambda_plus, philowk, phi_plus, eta_plus, current_L
+    return xplus, zplus, lambda_plus, philowk, phi_plus, alpha_plus, dzz, current_L
 
 
-def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=1):
+def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=1,
+            max_backtracks=50, c_min=1.0):
     """
     Adaptive Bregman Accelerated Gradient Descent.
 
-    The first iteration is treated as a special initialization step.
-    After that, the generic primal-dual update is used for k >= 1.
-
-    Returns
-    -------
-    x        : last iterate
-    F        : objective values at accepted iterates
-    tk_hist  : accepted t_k values
-    eta_hist : accepted eta_k values
-    T        : cumulative times
+    Optimizations:
+    - carries phi_x instead of recomputing f(x)+Psi(x) every iteration;
+    - caches psi_z = Psi(z_k) across the inner loop;
+    - uses f(xplus) rather than func_grad(xplus) in backtracking;
+    - tracks alpha_k directly, converts to eta_k only for history.
     """
     if L <= 0:
         raise ValueError("L must be positive.")
@@ -127,6 +119,16 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         raise ValueError("mu must be nonnegative.")
     if maxitrs <= 0:
         raise ValueError("maxitrs must be positive.")
+    if c_min <= 0:
+        raise ValueError("c_min must be positive.")
+
+    # Local bindings: cheaper in Python loops than repeated attribute lookups.
+    func_grad = f.func_grad
+    f_eval = f if callable(f) else (lambda x: f.func_grad(x)[0])
+    grad_h = h.gradient
+    extra_Psi = h.extra_Psi
+    div_prox_map = h.div_prox_map
+    divergence = h.divergence
 
     if verbose:
         print("\nABRA_GD method for min_{x in C} F(x) = f(x) + Psi(x)")
@@ -139,90 +141,96 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
     eta_hist = np.full(maxitrs, np.nan)
     T = np.zeros(maxitrs)
 
-    x = np.copy(x0)
-    z = np.copy(x0)
-    lambdak = np.zeros_like(x0)
-    eta_k = np.inf
-    dx0 = h.gradient(x0)
-
+    dx0 = grad_h(x0)
     current_L = float(max(L, mu))
-    current_c = 1.0
+    current_c = max(1.0, c_min)
 
-    for k in range(maxitrs):
-        phi_xk = f(x) + h.extra_Psi(x)
+    # ------------------------------------------------------------------
+    # k = 0 : explicit first step
+    # ------------------------------------------------------------------
+    fy0, gy0 = func_grad(x0)
 
-        if k == 0:
-            # Explicit first step.
-            # We do not use the generic t_k formula here because when
-            # eta_0 = +inf and mu = 0, it forces t_0 = 0.
-            t_k = 0.0
+    x, f_x, current_L = backtracking_gradient(
+        x0, fy0, gy0, current_L, f_eval, div_prox_map, divergence,
+        max_backtracks=max_backtracks,
+    )
+    z = np.copy(x)
+    lambdak = gy0
+    alpha_k = current_L
 
-            y = np.copy(x0)
-            fy, gy = f.func_grad(y)
-            dy = h.gradient(y)
+    phi_x = f_x + extra_Psi(x)
+    psi_z = phi_x - f_x          # z = x at k = 0
+    dzz = divergence(z, x0)
 
-            xplus, fplus, current_L = backtracking_gradient(y, f, h, gy, fy, current_L)
+    F[0] = phi_x
+    tk_hist[0] = 0.0
+    eta_hist[0] = np.inf if alpha_k == mu else 1.0 / (alpha_k - mu)
+    T[0] = time.time() - start_time
 
-            # Force z_1 = x_1 at initialization.
-            zplus = np.copy(xplus)
+    if verbose:
+        print(
+            "{0:6d}  {1:10.3e}  {2:10.3e}  {3:10.3e}  {4:10.3e}  {5:10.3e}  {6:6.1f}".format(
+                0, F[0], eta_hist[0], tk_hist[0], current_L, current_c, T[0]
+            )
+        )
 
-            # Choose lambda_1 so that the dual prox update matches z_1 = x_1.
-            lambda_plus = gy - mu * (dy - dx0)
+    if dzz < epsilon or maxitrs == 1:
+        return x, F[:1], tk_hist[:1], eta_hist[:1], T[:1]
 
-            # Enforce alpha_1 = mu + 1 / eta_1 = current_L.
-            if current_L < mu:
-                raise ValueError("First step requires current_L >= mu.")
-            if np.isclose(current_L, mu):
-                eta_plus = np.inf
+    # ------------------------------------------------------------------
+    # k >= 1
+    # ------------------------------------------------------------------
+    for k in range(1, maxitrs):
+        # optimistic trial (backtracking LS)
+        current_L = max(0.5 * current_L, mu)
+        current_c = max(0.5 * current_c, c_min)
+
+        while True:
+            t_k = positive_tk(alpha_k, mu, current_L, current_c)
+
+            x_cand, zplus, lambda_plus, philowk, phi_cand, alpha_plus, dzz, current_L = BregPDStep(
+                x=x,
+                z=z,
+                lambdak=lambdak,
+                alpha_k=alpha_k,
+                t_k=t_k,
+                mu=mu,
+                x0=x0,
+                dx0=dx0,
+                current_L=current_L,
+                psi_z=psi_z,
+                func_grad=func_grad,
+                f_eval=f_eval,
+                grad_h=grad_h,
+                extra_Psi=extra_Psi,
+                div_prox_map=div_prox_map,
+                divergence=divergence,
+            )
+
+            # Keep the better primal point before checking the descent inequality.
+            if phi_x <= phi_cand:
+                xplus = x
+                phi_plus = phi_x
             else:
-                eta_plus = 1.0 / (current_L - mu)
+                xplus = x_cand
+                phi_plus = phi_cand
 
-            phi_plus = fplus + h.extra_Psi(xplus)
+            rhs = (1.0 - t_k) * phi_x + t_k * philowk - alpha_plus * dzz
+            if phi_plus <= rhs:
+                break
 
-        else:
-            # Optimistic trial values for k >= 1.
-            current_L = max(0.5 * current_L, mu)
-            # current_c = max(0.5 * current_c, 1.0)
-            current_c = 0.5 * current_c
-
-            sufficient_decrease = False
-            while not sufficient_decrease:
-                t_k = positive_tk(eta_k, mu, current_L, current_c)
-
-                xplus, zplus, lambda_plus, philowk, phi_plus, eta_plus, current_L = BregPDStep(
-                    x=x,
-                    z=z,
-                    lambdak=lambdak,
-                    eta_k=eta_k,
-                    t_k=t_k,
-                    mu=mu,
-                    f=f,
-                    h=h,
-                    x0=x0,
-                    dx0=dx0,
-                    current_L=current_L,
-                )
-
-                alpha_plus = mu + 1.0 / eta_plus
-
-                sufficient_decrease = (
-                    phi_plus - ((1.0 - t_k) * phi_xk+ t_k * philowk)
-                    <=- alpha_plus * h.divergence(zplus, z)
-                )
-
-                if not sufficient_decrease:
-                    current_c *= 2.0
-
-        dzz = h.divergence(zplus, z)
+            current_c *= 2.0
 
         x = xplus
         z = zplus
         lambdak = lambda_plus
-        eta_k = eta_plus
+        alpha_k = alpha_plus
+        phi_x = phi_plus
+        psi_z = extra_Psi(z)
 
-        F[k] = phi_plus
+        F[k] = phi_x
         tk_hist[k] = t_k
-        eta_hist[k] = eta_k
+        eta_hist[k] = np.inf if alpha_k == mu else 1.0 / (alpha_k - mu)
         T[k] = time.time() - start_time
 
         if verbose and k % verbskip == 0:
@@ -235,13 +243,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         if dzz < epsilon:
             break
 
-    F = F[:k + 1]
-    tk_hist = tk_hist[:k + 1]
-    eta_hist = eta_hist[:k + 1]
-    T = T[:k + 1]
-
-    return x, F, tk_hist, eta_hist, T
-        
+    return x, F[:k + 1], tk_hist[:k + 1], eta_hist[:k + 1], T[:k + 1]  
 
 def BPG(f, h, L, x0, maxitrs, epsilon=1e-14, linesearch=True, ls_ratio=1.2,
         verbose=True, verbskip=1):

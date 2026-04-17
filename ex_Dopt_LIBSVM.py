@@ -44,7 +44,7 @@ def main() -> None:
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=5000, theta_eq=True, verbskip=1000)
     x2e, F2e, _, _, T2e = accbpg.ABPG_expo(f, h, L, x0, gamma0=3, maxitrs=5000, theta_eq=True, Gmargin=100, verbskip=1000)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=5000, G0=0.1, theta_eq=True, verbskip=1000)
-    xabra, Fabra, tk_abra, eta_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=5000, mu=0.0, verbskip=1000)
+    xabra, Fabra, tk_abra, eta_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=2000, mu=0.0, verbskip=1000)
 
     fig, _ = plt.subplots(1, 2, figsize=(11, 4))
     labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", r"ABRA-GD"]
@@ -56,7 +56,7 @@ def main() -> None:
 
     ax1 = plt.subplot(1, 2, 1)
     accbpg.plot_comparisons(
-        ax1, y_vals, labels, x_vals=[], plotdiff=True, yscale="log", xscale="log", xlim=[1, 3000], ylim=[5e-4, 20],
+        ax1, y_vals, labels, x_vals=[], plotdiff=True, yscale="log", xlim=[1, 3000], ylim=[5e-4, 20],
         xlabel=r"Iteration number $k$", ylabel=r"$F(x_k)-F_\star$", legendloc="lower left",
         linestyles=styles, linedash=dashes
     )
@@ -64,7 +64,7 @@ def main() -> None:
 
     ax2 = plt.subplot(1, 2, 2)
     accbpg.plot_comparisons(
-        ax2, y_vals, labels, x_vals=t_vals, plotdiff=True, yscale="log", xscale="log", ylim=[5e-4, 20],
+        ax2, y_vals, labels, x_vals=t_vals, plotdiff=True, yscale="log", ylim=[5e-4, 20],
         xlabel="Time (s)", ylabel=r"$F(x_k)-F_\star$", legendloc="lower left",
         linestyles=styles, linedash=dashes
     )

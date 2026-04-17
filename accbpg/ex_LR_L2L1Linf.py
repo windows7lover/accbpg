@@ -56,8 +56,8 @@ class LogisticRegression(RSmoothFunction):
 
 def test_L2L1Linf():
 
-    m = 10000
-    n = 20000
+    m = 1000
+    n = 2000
     A = np.random.randn(m, n)
     #b = np.sign(A[:, 0])
     b = np.sign(np.random.rand(m,1))

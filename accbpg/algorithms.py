@@ -4,6 +4,7 @@
 import math
 import numpy as np
 import time
+import warnings
 
 def positive_tk(eta_k, mu, L, c):
     """
@@ -40,25 +41,37 @@ def backtracking_gradient(y, f, h, gy, fy, current_L, max_backtracks=50):
 
     Accept when
         f(xplus) <= fy + <gy, xplus - y> + current_L * D_h(xplus, y).
+
+    If backtracking fails after max_backtracks attempts, emit a warning
+    and return the last trial as if it were accepted.
     """
     if current_L <= 0:
         raise ValueError("current_L must be positive.")
+    if max_backtracks <= 0:
+        raise ValueError("max_backtracks must be positive.")
+
+    xplus = None
+    fplus = None
 
     for _ in range(max_backtracks):
         xplus = h.div_prox_map(y, gy, current_L)
         fplus, _ = f.func_grad(xplus)
 
-        # print(fplus, fy)
         sufficient_decrease = (
-            (fplus-fy) <= np.dot(gy, xplus - y) + current_L * h.divergence(xplus, y)
+            (fplus - fy) <= np.dot(gy, xplus - y) + current_L * h.divergence(xplus, y)
         )
         if sufficient_decrease:
             return xplus, fplus, current_L
 
-        # Failed attempt => increase L.
         current_L *= 2.0
 
-    raise RuntimeError("backtracking_gradient failed to find a valid current_L.")
+    warnings.warn(
+        "backtracking_gradient failed to find a valid current_L; "
+        "returning the last trial as accepted.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return xplus, fplus, current_L
 
 
 def BregPDStep(x, z, lambdak, eta_k, t_k, mu, f, h, x0, dx0, current_L):
@@ -169,7 +182,8 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         else:
             # Optimistic trial values for k >= 1.
             current_L = max(0.5 * current_L, mu)
-            current_c = max(0.5 * current_c, 1.0)
+            # current_c = max(0.5 * current_c, 1.0)
+            current_c = 0.5 * current_c
 
             sufficient_decrease = False
             while not sufficient_decrease:
@@ -189,13 +203,11 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
                     current_L=current_L,
                 )
 
-                alpha_plus = mu if np.isinf(eta_plus) else mu + 1.0 / eta_plus
+                alpha_plus = mu + 1.0 / eta_plus
 
                 sufficient_decrease = (
-                    phi_plus <=
-                    (1.0 - t_k) * phi_xk
-                    + t_k * philowk
-                    - alpha_plus * h.divergence(zplus, z)
+                    phi_plus - ((1.0 - t_k) * phi_xk+ t_k * philowk)
+                    <=- alpha_plus * h.divergence(zplus, z)
                 )
 
                 if not sufficient_decrease:

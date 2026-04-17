@@ -14,6 +14,7 @@ from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 import accbpg
 
 
@@ -30,6 +31,31 @@ matplotlib.rcParams.update(
 def save_figure(fig, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=200, bbox_inches="tight")
+
+
+def infer_plot_window(y_vals, x_pad_frac: float = 0.02):
+    arrays = [np.asarray(y, dtype=float) for y in y_vals]
+    finite_mins = [np.min(a[np.isfinite(a)]) for a in arrays if np.any(np.isfinite(a))]
+    if not finite_mins:
+        return (-1, 1), (1e-12, 1.0)
+    f_star = min(finite_mins)
+    pos_gaps = []
+    for a in arrays:
+        g = a - f_star
+        g = g[np.isfinite(g) & (g > 0)]
+        if g.size:
+            pos_gaps.append(g)
+    if pos_gaps:
+        all_gaps = np.concatenate(pos_gaps)
+        ymin = 10.0 ** np.floor(np.log10(np.min(all_gaps)))
+        ymax = 10.0 ** np.ceil(np.log10(np.max(all_gaps)))
+        if ymin == ymax:
+            ymax = 10.0 * ymin
+    else:
+        ymin, ymax = 1e-12, 1.0
+    kmax = max(max(len(a) - 1, 1) for a in arrays)
+    pad = max(1, int(np.ceil(x_pad_frac * kmax)))
+    return (-pad, kmax + pad), (ymin, ymax)
 
 
 def run_experiment(
@@ -101,7 +127,7 @@ def run_experiment(
     }
 
 
-def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str | None = None):
+def plot_experiment(results: dict, *, title: str | None = None):
     fig, _ = plt.subplots(1, 2, figsize=(11, 4))
 
     labels = [
@@ -136,6 +162,7 @@ def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str 
         results["ABRA_GD_g_RS"]["T"],
         results["ABRA_GD_f_RS"]["T"],
     ]
+    iter_xlim, gap_ylim = infer_plot_window(y_vals)
 
     ax1 = plt.subplot(1, 2, 1)
     accbpg.plot_comparisons(
@@ -145,11 +172,11 @@ def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str 
         x_vals=[],
         plotdiff=True,
         yscale="log",
-        xlim=[-20, 2000],
+        xlim=list(iter_xlim),
         ylim=list(gap_ylim),
         xlabel=r"Iteration number $k$",
         ylabel=r"$F(x_k)-F_\star$",
-        legendloc="upper right",
+        legendloc="best",
         linestyles=styles,
         linedash=dashes,
     )
@@ -165,7 +192,7 @@ def plot_experiment(results: dict, *, gap_ylim: tuple[float, float], title: str 
         ylim=list(gap_ylim),
         xlabel="Time (s)",
         ylabel=r"$F(x_k)-F_\star$",
-        legendloc="upper right",
+        legendloc="best",
         linestyles=styles,
         linedash=dashes,
     )
@@ -184,23 +211,13 @@ def main():
     parser.add_argument("--no-show", action="store_true", help="Do not display figures.")
     args = parser.parse_args()
     
-    # Experiment 1
     m, n = 1000, 100
     results_1 = run_experiment(m, n, maxitrs=args.maxitrs, verbskip=args.verbskip)
-    fig1 = plot_experiment(
-        results_1,
-        gap_ylim=(1e-6, 1e-1),
-        title=f"KL nonnegative regression: m={m}, n={n}",
-    )
+    fig1 = plot_experiment(results_1, title=f"KL nonnegative regression: m={m}, n={n}")
 
-    # Experiment 2
     m, n = 100, 1000
     results_2 = run_experiment(m, n, maxitrs=args.maxitrs, verbskip=args.verbskip)
-    fig2 = plot_experiment(
-        results_2,
-        gap_ylim=(1e-10, 1e-1),
-        title=f"KL nonnegative regression: m={m}, n={n}",
-    )
+    fig2 = plot_experiment(results_2, title=f"KL nonnegative regression: m={m}, n={n}")
 
     if args.save_dir is not None:
         save_figure(fig1, args.save_dir / "KL_regr_m1000n100.png")

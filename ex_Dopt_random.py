@@ -14,8 +14,8 @@ from pathlib import Path
 
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 import accbpg
-
 
 matplotlib.rcParams.update(
     {"font.size": 16, "legend.fontsize": 14, "font.family": "serif"}
@@ -28,23 +28,50 @@ def save_figure(fig, path: Path) -> None:
     fig.savefig(path, dpi=200, bbox_inches="tight")
 
 
-def make_comparison_figure(y_vals, t_vals, labels, styles, dashes, *, iter_xlim, gap_ylim, iter_legend, time_legend):
+def infer_plot_window(y_vals, x_pad_frac: float = 0.02):
+    arrays = [np.asarray(y, dtype=float) for y in y_vals]
+    finite_mins = [np.min(a[np.isfinite(a)]) for a in arrays if np.any(np.isfinite(a))]
+    if not finite_mins:
+        return (-1, 1), (1e-12, 1.0)
+    f_star = min(finite_mins)
+    pos_gaps = []
+    for a in arrays:
+        g = a - f_star
+        g = g[np.isfinite(g) & (g > 0)]
+        if g.size:
+            pos_gaps.append(g)
+    if pos_gaps:
+        all_gaps = np.concatenate(pos_gaps)
+        ymin = 10.0 ** np.floor(np.log10(np.min(all_gaps)))
+        ymax = 10.0 ** np.ceil(np.log10(np.max(all_gaps)))
+        if ymin == ymax:
+            ymax = 10.0 * ymin
+    else:
+        ymin, ymax = 1e-12, 1.0
+    kmax = max(max(len(a) - 1, 1) for a in arrays)
+    pad = max(1, int(np.ceil(x_pad_frac * kmax)))
+    return (-pad, kmax + pad), (ymin, ymax)
+
+
+def make_comparison_figure(y_vals, t_vals, labels, styles, dashes, *, title: str):
     fig, _ = plt.subplots(1, 2, figsize=(11, 4))
+    iter_xlim, gap_ylim = infer_plot_window(y_vals)
 
     ax1 = plt.subplot(1, 2, 1)
     accbpg.plot_comparisons(
         ax1, y_vals, labels, x_vals=[], plotdiff=True, yscale="log", xlim=list(iter_xlim), ylim=list(gap_ylim),
-        xlabel=r"Iteration number $k$", ylabel=r"$F(x_k)-F_\star$", legendloc=iter_legend,
+        xlabel=r"Iteration number $k$", ylabel=r"$F(x_k)-F_\star$", legendloc="best",
         linestyles=styles, linedash=dashes
     )
 
     ax2 = plt.subplot(1, 2, 2)
     accbpg.plot_comparisons(
         ax2, y_vals, labels, x_vals=t_vals, plotdiff=True, yscale="log", ylim=list(gap_ylim),
-        xlabel="Time (s)", ylabel=r"$F(x_k)-F_\star$", legendloc=time_legend,
+        xlabel="Time (s)", ylabel=r"$F(x_k)-F_\star$", legendloc="best",
         linestyles=styles, linedash=dashes
     )
 
+    fig.suptitle(title)
     plt.tight_layout(w_pad=4)
     return fig
 
@@ -57,9 +84,6 @@ def main() -> None:
 
     figs: list[tuple[plt.Figure, str]] = []
 
-    # ------------------------------------------------------------------
-    # Section 1: adaptive comparison + ABRA_GD
-    # ------------------------------------------------------------------
     m = 80
     n = 200
     f, h, L, x0 = accbpg.D_opt_design(m, n, randseed=10)
@@ -69,24 +93,19 @@ def main() -> None:
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=1000, theta_eq=True, verbskip=100)
     x2e, F2e, _, _, T2e = accbpg.ABPG_expo(f, h, L, x0, gamma0=3, maxitrs=1000, theta_eq=True, verbskip=100)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, verbskip=100)
-    xabra, Fabra, tk_abra, eta_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, verbskip=100)
+    xabra, Fabra, _, _, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=False, verbskip=100)
+    xabrag, Fabrag, _, _, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
+    xabraf, Fabraf, _, _, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
 
-    labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", r"ABRA-GD"]
-    styles = ["k:", "g-", "b-.", "k-", "r--", "c-"]
-    dashes = [[1, 2], [], [4, 2, 1, 2], [], [4, 2], []]
-    y_vals = [F00, FLS, F20, F2e, F2g, Fabra]
-    t_vals = [T00, TLS, T20, T2e, T2g, Tabra]
+    labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
+    styles = ["k:", "g-", "b-.", "k-", "r--", "c-", "c--", "c:"]
+    dashes = [[1, 2], [], [4, 2, 1, 2], [], [4, 2], [], [2,2], [1,1]]
+    y_vals = [F00, FLS, F20, F2e, F2g, Fabra, Fabrag, Fabraf]
+    t_vals = [T00, TLS, T20, T2e, T2g, Tabra, Tabrag, Tabraf]
 
-    fig = make_comparison_figure(
-        y_vals, t_vals, labels, styles, dashes,
-        iter_xlim=(-10, 1000), gap_ylim=(1e-5, 2),
-        iter_legend="upper right", time_legend="lower left"
-    )
+    fig = make_comparison_figure(y_vals, t_vals, labels, styles, dashes, title=f"D-optimal random: m={m}, n={n}")
     figs.append((fig, "D_opt_m80n200_adapt.png"))
 
-    # ------------------------------------------------------------------
-    # Section 2: restart comparison + ABRA_GD
-    # ------------------------------------------------------------------
     ms = 80
     ns = 120
     fs, hs, Ls, x0s = accbpg.D_opt_design(ms, ns, randseed=10)
@@ -97,19 +116,17 @@ def main() -> None:
     xs20rs, Fs20rs, _, Ts20rs = accbpg.ABPG(fs, hs, Ls, x0s, gamma=2.0, maxitrs=1000, theta_eq=True, restart=True, verbskip=100)
     xs2g, Fs2g, _, _, _, Ts2g = accbpg.ABPG_gain(fs, hs, Ls, x0s, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, restart=False, verbskip=100)
     xs2grs, Fs2grs, _, _, _, Ts2grs = accbpg.ABPG_gain(fs, hs, Ls, x0s, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, restart=True, verbskip=100)
-    xsabra, Fsabra, tks_abra, etas_abra, Tsabra = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, verbskip=100)
+    xsabra, Fsabra, _, _, Tsabra = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=False, verbskip=100)
+    xsabrag, Fsabrag, _, _, Tsabrag = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
+    xsabraf, Fsabraf, _, _, Tsabraf = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
 
-    labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG RS", r"ABPG-g", r"ABPG-g RS", r"ABRA-GD"]
-    styles = ["k:", "g-", "b-.", "m-", "k-", "r--", "c-"]
-    dashes = [[1, 2], [], [4, 2, 1, 2], [4, 2, 1, 2, 1, 2], [], [4, 2], []]
-    y_vals = [Fs00, FsLS, Fs20, Fs20rs, Fs2g, Fs2grs, Fsabra]
-    t_vals = [Ts00, TsLS, Ts20, Ts20rs, Ts2g, Ts2grs, Tsabra]
+    labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG RS", r"ABPG-g", r"ABPG-g RS", r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
+    styles = ["k:", "g-", "b-.", "m-", "k-", "r--", "c-", "c--", "c:"]
+    dashes = [[1, 2], [], [4, 2, 1, 2], [4, 2, 1, 2, 1, 2], [], [4, 2], [], [2,2], [1,1]]
+    y_vals = [Fs00, FsLS, Fs20, Fs20rs, Fs2g, Fs2grs, Fsabra, Fsabrag, Fsabraf]
+    t_vals = [Ts00, TsLS, Ts20, Ts20rs, Ts2g, Ts2grs, Tsabra, Tsabrag, Tsabraf]
 
-    fig = make_comparison_figure(
-        y_vals, t_vals, labels, styles, dashes,
-        iter_xlim=(0, 50), gap_ylim=(1e-10, 1),
-        iter_legend="upper right", time_legend="upper right"
-    )
+    fig = make_comparison_figure(y_vals, t_vals, labels, styles, dashes, title=f"D-optimal random restart: m={ms}, n={ns}")
     figs.append((fig, "D_opt_m80n120_restart.png"))
 
     if args.save_dir is not None:

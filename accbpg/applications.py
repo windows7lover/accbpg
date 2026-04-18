@@ -119,7 +119,10 @@ def Poisson_regrL1(m, n, noise=0.01, lamda=0, randseed=-1, normalizeA=True):
 
     f = PoissonRegression(A, b)
     # L1 regularization often not enough for convergence!
-    h = BurgEntropyL1(lamda)
+    if lamda > 0:
+        h = BurgEntropyL1(lamda)
+    else:
+        h = BurgEntropy()
     L = b.sum()
     # Initial point should be far from 0 in order for ARDA to work well!
     x0 = (1.0/n)*np.ones(n) * 10

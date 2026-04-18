@@ -232,6 +232,8 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
     F = np.zeros(maxitrs)
     tk_hist = np.zeros(maxitrs)
     eta_hist = np.full(maxitrs, np.nan)
+    ck_hist = np.full(maxitrs, np.nan)
+    alpha_hist = np.full(maxitrs, np.nan)
     T = np.zeros(maxitrs)
 
     current_L = float(max(L, mu))
@@ -369,6 +371,8 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         F[k] = phi_x
         tk_hist[k] = t_k
         eta_hist[k] = eta_k
+        ck_hist[k] = current_c
+        alpha_hist[k] = alpha_k
         T[k] = time.time() - start_time
 
         if verbose and k % verbskip == 0:
@@ -384,7 +388,15 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         if eta_k < epsilon:
             break
 
-    return x, F[:k + 1], tk_hist[:k + 1], eta_hist[:k + 1], T[:k + 1]
+    return (
+        x,
+        F[:k + 1],
+        tk_hist[:k + 1],
+        eta_hist[:k + 1],
+        ck_hist[:k + 1],
+        alpha_hist[:k + 1],
+        T[:k + 1],
+    )
 
 def BPG(f, h, L, x0, maxitrs, epsilon=1e-14, linesearch=True, ls_ratio=1.2,
         verbose=True, verbskip=1):

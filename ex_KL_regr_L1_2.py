@@ -54,6 +54,77 @@ def infer_plot_window(y_vals, x_pad_frac: float = 0.02):
     return (-pad, kmax + pad), (ymin, ymax)
 
 
+
+def infer_metric_ylim(series_list, logscale=False):
+    vals = []
+    for s in series_list:
+        a = np.asarray(s, dtype=float)
+        if logscale:
+            a = a[np.isfinite(a) & (a > 0)]
+        else:
+            a = a[np.isfinite(a)]
+        if a.size:
+            vals.append(a)
+    if not vals:
+        return None
+    allv = np.concatenate(vals)
+    if logscale:
+        ymin = 10.0 ** np.floor(np.log10(np.min(allv)))
+        ymax = 10.0 ** np.ceil(np.log10(np.max(allv)))
+        if ymin == ymax:
+            ymax = 10.0 * ymin
+        return ymin, ymax
+    ymin = np.min(allv)
+    ymax = np.max(allv)
+    if ymin == ymax:
+        pad = 1.0 if ymin == 0 else 0.1 * abs(ymin)
+        return ymin - pad, ymax + pad
+    pad = 0.05 * (ymax - ymin)
+    return ymin - pad, ymax + pad
+
+
+def plot_abra_diagnostics(results: dict, *, title: str | None = None):
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+    keys = ["ABRA_GD", "ABRA_GD_g_RS", "ABRA_GD_f_RS"]
+    labels = [r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
+    styles = ["c-", "c--", "c:"]
+    dashes = [[6, 2], [2, 2], [1, 1]]
+
+    xvals = [np.arange(len(results[k]["t"])) for k in keys]
+
+    t_series = [results[k]["t"] for k in keys]
+    c_series = [results[k]["c"] for k in keys]
+    alpha_series = [results[k]["alpha"] for k in keys]
+    eta_series = [np.where(np.isfinite(results[k]["eta"]), results[k]["eta"], np.nan) for k in keys]
+
+    panels = [
+        (axes[0, 0], t_series, r"$t_k$", "linear"),
+        (axes[0, 1], c_series, r"$c_k$", "log"),
+        (axes[1, 0], alpha_series, r"$\alpha_k$", "log"),
+        (axes[1, 1], eta_series, r"$\eta_k$", "log"),
+    ]
+
+    xmax = max(max(len(s) - 1, 1) for s in t_series)
+    xpad = max(1, int(np.ceil(0.02 * xmax)))
+    xlim = (-xpad, xmax + xpad)
+
+    for ax, series, ylabel, yscale in panels:
+        for xi, yi, lab, sty, dash in zip(xvals, series, labels, styles, dashes):
+            ax.plot(xi, yi, sty, label=lab, dashes=dash)
+        ax.set_xlim(xlim)
+        ax.set_xlabel(r"Iteration number $k$")
+        ax.set_ylabel(ylabel)
+        ax.set_yscale(yscale)
+        ylim = infer_metric_ylim(series, logscale=(yscale == "log"))
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        ax.legend(loc="best")
+
+    if title:
+        fig.suptitle(title)
+    plt.tight_layout(w_pad=3.0, h_pad=2.0)
+    return fig
+
 def run_experiment(m: int, n: int, *, maxitrs: int = 5000, verbskip: int = 1000):
     f, h, L, x0 = accbpg.KL_nonneg_regr(
         m, n, noise=0.01, lamdaL1=0.001, normalizeA=True, randseed=1
@@ -65,9 +136,9 @@ def run_experiment(m: int, n: int, *, maxitrs: int = 5000, verbskip: int = 1000)
     x20rs, F20rs, _, T20rs = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=maxitrs, theta_eq=True, restart=True, verbskip=verbskip)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=maxitrs, G0=0.1, theta_eq=True, restart=False, verbskip=verbskip)
     x2grs, F2grs, _, _, _, T2grs = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=maxitrs, G0=0.1, theta_eq=True, restart=True, restart_rule="f", verbskip=verbskip)
-    xabra, Fabra, tk_abra, eta_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=False, verbskip=verbskip)
-    xabrag, Fabrag, tk_abrag, eta_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="g", verbskip=verbskip)
-    xabraf, Fabraf, tk_abraf, eta_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="f", verbskip=verbskip)
+    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=False, verbskip=verbskip)
+    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="g", verbskip=verbskip)
+    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="f", verbskip=verbskip)
 
     return {
         "BPG": {"F": F00, "T": T00},
@@ -76,9 +147,9 @@ def run_experiment(m: int, n: int, *, maxitrs: int = 5000, verbskip: int = 1000)
         "ABPG_RS": {"F": F20rs, "T": T20rs},
         "ABPG_g": {"F": F2g, "T": T2g},
         "ABPG_g_RS": {"F": F2grs, "T": T2grs},
-        "ABRA_GD": {"F": Fabra, "T": Tabra, "t": tk_abra, "eta": eta_abra},
-        "ABRA_GD_g_RS": {"F": Fabrag, "T": Tabrag, "t": tk_abrag, "eta": eta_abrag},
-        "ABRA_GD_f_RS": {"F": Fabraf, "T": Tabraf, "t": tk_abraf, "eta": eta_abraf},
+        "ABRA_GD": {"F": Fabra, "T": Tabra, "t": tk_abra, "eta": eta_abra, "c": ck_abra, "alpha": alpha_abra},
+        "ABRA_GD_g_RS": {"F": Fabrag, "T": Tabrag, "t": tk_abrag, "eta": eta_abrag, "c": ck_abrag, "alpha": alpha_abrag},
+        "ABRA_GD_f_RS": {"F": Fabraf, "T": Tabraf, "t": tk_abraf, "eta": eta_abraf, "c": ck_abraf, "alpha": alpha_abraf},
     }
 
 
@@ -130,17 +201,29 @@ def main() -> None:
 
     results_1 = run_experiment(1000, 100, maxitrs=args.maxitrs, verbskip=args.verbskip)
     fig1 = plot_experiment(results_1, title="KL nonnegative regression: m=1000, n=100")
+    fig1_diag = plot_abra_diagnostics(
+        results_1,
+        title="ABRA diagnostics: KL nonnegative regression, m=1000, n=100",
+    )
 
     results_2 = run_experiment(100, 1000, maxitrs=args.maxitrs, verbskip=args.verbskip)
     fig2 = plot_experiment(results_2, title="KL nonnegative regression: m=100, n=1000")
+    fig2_diag = plot_abra_diagnostics(
+        results_2,
+        title="ABRA diagnostics: KL nonnegative regression, m=100, n=1000",
+    )
 
     if args.save_dir is not None:
         save_figure(fig1, args.save_dir / "KL_regr_restart_m1000n100.png")
+        save_figure(fig1_diag, args.save_dir / "KL_regr_restart_m1000n100_abra_diag.png")
         save_figure(fig2, args.save_dir / "KL_regr_restart_m100n1000.png")
+        save_figure(fig2_diag, args.save_dir / "KL_regr_restart_m100n1000_abra_diag.png")
 
     if args.no_show:
         plt.close(fig1)
+        plt.close(fig1_diag)
         plt.close(fig2)
+        plt.close(fig2_diag)
     else:
         plt.show()
 

@@ -26,27 +26,70 @@ def D_opt_libsvm(filename):
     return f, h, L, x0
    
 
-def D_opt_design(m, n, randseed=-1):
+def D_opt_design(
+    m,
+    n,
+    randseed=-1,
+    target_cond=1.0,
+    spectrum="flat",
+    spectrum_power=1.0,
+    shuffle_scales=True,
+    return_info=False,
+):
     """
     Generate a random instance of the D-Optimal Design problem
-        m, n: size of design matrix H is m by n wiht m < n
+        m, n: size of design matrix H is m by n with m < n
+
+    The columns of H can be made less uniform by scaling them with a chosen
+    profile. This does not control the singular values of H exactly, but it is
+    a simple and effective way to create heterogeneous column norms.
+
+    Inputs:
+        target_cond: rough spread between the largest and smallest column scale
+                     (>= 1). target_cond = 1 gives the old uniform generator.
+        spectrum: one of {"flat", "geometric", "polynomial", "two_cluster"}
+        spectrum_power: controls the decay for spectrum == "polynomial"
+        shuffle_scales: randomly permute the column scales
+        return_info: if True, also return diagnostics
+
     Return f, h, L, x0:
         f:  f(x) = - log(det(H*diag(x)*H'))
-        h:  Burg Entrop with Simplex constraint
+        h:  Burg entropy with simplex constraint
         L:  L = 1
         x0: initial point is center of simplex
     """
 
     if randseed > 0:
         np.random.seed(randseed)
-    H = np.random.randn(m,n)
+
+    H = np.random.randn(m, n)
+
+    scales = _make_scales(
+        n,
+        target_cond=target_cond,
+        spectrum=spectrum,
+        power=spectrum_power,
+    )
+    if shuffle_scales:
+        scales = scales[np.random.permutation(n)]
+    H = H * scales[None, :]
 
     f = DOptimalObj(H)
     h = BurgEntropySimplex()
     L = 1.0
     x0 = (1.0/n)*np.ones(n)
-    
-    return f, h, L, x0
+
+    if not return_info:
+        return f, h, L, x0
+
+    col_norms = np.linalg.norm(H, axis=0)
+    info = {
+        "H": H,
+        "column_scales": scales,
+        "column_norms": col_norms,
+        "column_norm_ratio": np.inf if col_norms.min() == 0 else col_norms.max() / col_norms.min(),
+    }
+    return f, h, L, x0, info
 
 
 def D_opt_KYinit(V):

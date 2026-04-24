@@ -289,32 +289,60 @@ class BurgEntropyL2(BurgEntropy):
        
 class BurgEntropySimplex(BurgEntropy):
     """
-    h(x) = - sum_{i=1}^n log(x[i])  used in the context of solving 
-    min_{x \in C} f(x)  where C is the standard simplex, with  Psi(x) = 0
+    h(x) = - sum_i log(x_i), on the standard simplex
+        C = {x >= 0, sum_i x_i = 1}.
+
+    The prox solves
+        min_{x in C} <g, x> + L h(x),
+    whose solution is
+        x_i = 1 / (g_i / L + c),
+    with c chosen so that sum_i x_i = 1.
     """
-    def __init__(self, eps=1e-8):
-        # eps is precision for solving prox_map using Newton's method
+
+    def __init__(self, eps=1e-12, max_iters=200):
         assert eps > 0, "BurgEntropySimplex: eps should be positive."
-        self.eps = eps
-     
+        assert max_iters > 0, "max_iters must be positive."
+        self.eps = float(eps)
+        self.max_iters = int(max_iters)
+
     def prox_map(self, g, L):
         """
-        Return argmin_{x in C} { <g, x> + L h(x) } where C is unit simplex
+        Return argmin_{x in C} { <g, x> + L h(x) } where C is the unit simplex.
         """
-        assert L > 0, "BergEntropySimplex prox_map only takes positive L."
-        gg = g / L
-        cmin = -gg.min()    # choose cmin to ensure min(gg+c) >= 0
-        # first use bisection to find c such that sum(1/(gg+c)) > 0
-        c = cmin + 1        
-        while sum(1/(gg+c))-1 < 0:
-            c = (cmin + c) / 2.0
-        # then use Newton's method to find optimal c
-        fc = sum(1/(gg+c))-1
-        while abs(fc) > self.eps:
-            fpc = sum(-1.0/(gg+c)**2)
-            c = c - fc / fpc
-            fc = sum(1/(gg+c))-1
-        x = 1.0/(gg+c)
+        assert L > 0, "BurgEntropySimplex prox_map only takes positive L."
+
+        gg = np.asarray(g, dtype=float) / float(L)
+
+        # Domain: c > -min(gg)
+        c_lo = -np.min(gg)
+        c_lo = np.nextafter(c_lo, np.inf)
+
+        def f(c):
+            return np.sum(1.0 / (gg + c)) - 1.0
+
+        # Find c_hi such that f(c_hi) <= 0
+        c_hi = max(c_lo + 1.0, 1.0)
+        while f(c_hi) > 0.0:
+            c_hi *= 2.0
+
+        # Bisection on the unique root of f(c)=0
+        for _ in range(self.max_iters):
+            c = 0.5 * (c_lo + c_hi)
+            fc = f(c)
+
+            if abs(fc) <= self.eps:
+                break
+
+            if fc > 0.0:
+                c_lo = c
+            else:
+                c_hi = c
+
+            if c_hi - c_lo <= self.eps * max(1.0, abs(c_hi), abs(c_lo)):
+                break
+
+        c = 0.5 * (c_lo + c_hi)
+        x = 1.0 / (gg + c)
         return x
        
 

@@ -16,6 +16,7 @@ def positive_tk(alpha_k, mu, L, c):
         L c t^2 + (alpha_k - mu) t - alpha_k = 0,
     avoiding cancellation when c is large and the root is very small.
     """
+    
     if L <= 0:
         raise ValueError("L must be positive.")
     if c <= 0:
@@ -26,11 +27,14 @@ def positive_tk(alpha_k, mu, L, c):
     if alpha_k == 0.0 and mu == 0.0:
         return 0.0
 
-    Lc = L * c
+    # return min(0.99, 1/(c))
+    
+    # Lc = L * c
+    Lc = c
     delta = alpha_k - mu
     sqrt_disc = math.hypot(delta, 2.0 * math.sqrt(Lc) * math.sqrt(alpha_k))
     t_pos = (2.0 * alpha_k) / (delta + sqrt_disc)
-    return min(1.0, max(0.0, t_pos))
+    return min(0.99, max(0.0, t_pos))
 
 
 def backtracking_gradient(y, fy, gy, current_L, f_eval, div_prox_map, divergence,
@@ -38,8 +42,7 @@ def backtracking_gradient(y, fy, gy, current_L, f_eval, div_prox_map, divergence
     """
     Backtracking for the mirror/prox-gradient step.
 
-    Uses only f(xplus), not func_grad(xplus), because the gradient at xplus
-    is not needed here.
+    Tracks and returns the best fplus seen during backtracking.
     """
     if current_L <= 0:
         raise ValueError("current_L must be positive.")
@@ -48,25 +51,33 @@ def backtracking_gradient(y, fy, gy, current_L, f_eval, div_prox_map, divergence
 
     xplus = None
     fplus = None
+    best_xplus = None
+    best_fplus = None
 
     for _ in range(max_backtracks):
-        xplus = div_prox_map(y, gy, current_L)
-        step = xplus - y
-        dxy = divergence(xplus, y)
-        fplus = f_eval(xplus)
+        xtrial = div_prox_map(y, gy, current_L)
+        step = xtrial - y
+        dxy = divergence(xtrial, y)
+        ftrial = f_eval(xtrial)
 
-        if (fplus - fy) <= np.dot(gy, step) + current_L * dxy:
-            return xplus, fplus, current_L
+        if best_fplus is None or ftrial < best_fplus:
+            best_xplus = xtrial
+            best_fplus = ftrial
 
+        if (ftrial - fy) <= np.dot(gy, step) + current_L * dxy:
+            return best_xplus, best_fplus, current_L
+
+        xplus = xtrial
+        fplus = ftrial
         current_L *= 2.0
 
     warnings.warn(
         "backtracking_gradient failed to find a valid current_L; "
-        "returning the last trial as accepted.",
+        "returning the best trial seen.",
         RuntimeWarning,
         stacklevel=2,
     )
-    return xplus, fplus, current_L
+    return best_xplus, best_fplus, current_L
 
 
 def acc_init_state(x_start, mu, current_L, current_c, f_eval, grad_h, extra_Psi):
@@ -74,7 +85,7 @@ def acc_init_state(x_start, mu, current_L, current_c, f_eval, grad_h, extra_Psi)
     Initialize/reset one ABRA_GD phase.
 
     The current point x_start becomes the new anchor point for the phase.
-    The returned state is a sentinel state with eta_k = +inf, meaning the next
+    The returned state is a sentinel state with eta_k = 0, meaning the next
     loop iteration must execute acc_first_step from this new anchor.
     """
     x_anchor = np.copy(x_start)
@@ -84,7 +95,7 @@ def acc_init_state(x_start, mu, current_L, current_c, f_eval, grad_h, extra_Psi)
     z = np.copy(x_anchor)
     lambdak = np.zeros_like(x_anchor)
     alpha_k = mu
-    eta_k = np.inf
+    eta_k = 0
     phi_x = f_eval(x)
     phi_x += extra_Psi(x)
     psi_z = extra_Psi(z)
@@ -148,11 +159,17 @@ def fallback_gd_step(x, current_L, func_grad, f_eval, extra_Psi,
     phi_plus = fplus + extra_Psi(xplus)
     return xplus, phi_plus, current_L
 
-
 def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x_anchor, dx_anchor, current_L, psi_z,
-               func_grad, f_eval, grad_h, extra_Psi, div_prox_map, divergence):
+               func_grad, f_eval, grad_h, extra_Psi, div_prox_map, divergence,
+               local_z=True):
     """
     One generic primal-dual Bregman step for k >= 1.
+
+    If local_z is False, use the original anchor-based prox:
+        z_{k+1} = argmin_x <lambda_{k+1}, x> + alpha_{k+1} D_h(x, x_anchor) + Psi(x)
+
+    If local_z is True, use the equivalent local form centered at z_k:
+        z_{k+1} = argmin_x < t_k (gy - mu (dy - dz)), x > + alpha_{k+1} D_h(x, z_k) + Psi(x)
 
     Returns alpha_plus and dzz directly so ABRA_GD does not recompute them.
     """
@@ -169,27 +186,39 @@ def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x_anchor, dx_anchor, current_L, 
             "The first step must be handled explicitly."
         )
 
-    lambda_plus = omt * lambdak + t_k * (gy - mu * (dy - dx_anchor))
-    zplus = div_prox_map(x_anchor, lambda_plus, alpha_plus)
+    # More accurate than omt * lambdak + t_k * dual_target when t_k is small.
+    dual_target = gy - mu * (dy - dx_anchor)
+    lambda_plus = lambdak + t_k * (dual_target - lambdak)
+
+    if local_z:
+        dz = grad_h(z)
+        local_linear = t_k * (gy - mu * (dy - dz))
+        zplus = div_prox_map(z, local_linear, alpha_plus)
+    else:
+        zplus = div_prox_map(x_anchor, lambda_plus, alpha_plus)
+
     dzz = divergence(zplus, z)
 
     xplus, fplus, current_L = backtracking_gradient(
         y, fy, gy, current_L, f_eval, div_prox_map, divergence
     )
-    
-    # Gigh precision accumulation
+
+    # High precision accumulation
     aff = np.sum((gy * (z - y)).astype(np.longdouble), dtype=np.longdouble)
     dzy = np.longdouble(divergence(z, y))
-    philowk = float(np.longdouble(fy) + aff + np.longdouble(mu) * dzy + np.longdouble(psi_z))
-    
-    # philowk = fy + np.dot(gy, z - y) + mu * divergence(z, y) + psi_z
+    philowk = float(
+        np.longdouble(fy)
+        + aff
+        + np.longdouble(mu) * dzy
+        + np.longdouble(psi_z)
+    )
+
     psi_xplus = extra_Psi(xplus)
     phi_plus = fplus + psi_xplus
 
     return y, gy, dy, xplus, zplus, lambda_plus, philowk, phi_plus, alpha_plus, dzz, current_L
 
-
-def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=1,
+def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
             max_backtracks=50, c_min=1.0, c_max=1.0e12, restart=False, restart_rule='g'):
     """
     Adaptive Bregman Accelerated Gradient Descent.
@@ -198,7 +227,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
     - carries phi_x instead of recomputing f(x)+Psi(x) every iteration;
     - caches psi_z = Psi(z_k) across the inner loop;
     - uses f(xplus) rather than func_grad(xplus) in backtracking;
-    - tracks alpha_k directly, and eta_k explicitly to detect mandatory first steps.
+    - tracks alpha_k directly, eta_k explicitly, and now stores L_k history.
     """
     if L <= 0:
         raise ValueError("L must be positive.")
@@ -215,7 +244,6 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
     if restart_rule not in ('g', 'f'):
         raise ValueError("restart_rule must be either 'g' or 'f'.")
 
-    # Local bindings: cheaper in Python loops than repeated attribute lookups.
     func_grad = f.func_grad
     f_eval = f if callable(f) else (lambda x: f.func_grad(x)[0])
     grad_h = h.gradient
@@ -234,6 +262,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
     eta_hist = np.full(maxitrs, np.nan)
     ck_hist = np.full(maxitrs, np.nan)
     alpha_hist = np.full(maxitrs, np.nan)
+    L_hist = np.full(maxitrs, np.nan)
     T = np.zeros(maxitrs)
 
     current_L = float(max(L, mu))
@@ -261,7 +290,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         x_prev = np.copy(x)
         phi_prev = phi_x
 
-        if np.isinf(eta_k):
+        if eta_k == 0:
             x, z, lambdak, alpha_k, phi_x, psi_z, dzz, current_L = acc_first_step(
                 x,
                 mu,
@@ -276,20 +305,19 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
                 divergence,
                 max_backtracks=max_backtracks,
             )
-            eta_k = np.inf if alpha_k == mu else 1.0 / (alpha_k - mu)
+            eta_k = 0 if alpha_k == mu else 1.0 / (alpha_k - mu)
             t_k = 0.0
             current_c = max(1.0, c_min)
         else:
-            # optimistic trial (backtracking LS)
             current_L = max(0.5 * current_L, mu)
-            current_c = max(0.5 * current_c, c_min)
+            # current_c = max(0.5 * current_c, 1.0)
+            current_c = 0.5 * current_c
 
             while True:
-                if current_c > c_max: # Fallback to simple GD step
-                    t_k = 0.0
-                    # current_c = max(1.0, c_min)
-                else:
-                    t_k = positive_tk(alpha_k, mu, current_L, current_c)
+                # if current_c > c_max:
+                #     t_k = 0.0
+                # else:
+                t_k = positive_tk(alpha_k, mu, current_L, current_c)
 
                 y_cand, gy_cand, dy_cand, x_cand, zplus, lambda_plus, philowk, phi_cand, alpha_plus, dzz, current_L = BregPDStep(
                     x=x,
@@ -310,7 +338,6 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
                     divergence=divergence,
                 )
 
-                # Keep the better primal point before checking the descent inequality.
                 if phi_x <= phi_cand:
                     xplus = x
                     phi_plus = phi_x
@@ -318,11 +345,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
                     xplus = x_cand
                     phi_plus = phi_cand
 
-                phi_delta = (phi_plus - phi_x) - t_k * (philowk - phi_x)
-                rhs_delta = -alpha_plus * dzz
-                c_check_tol = 0.1 * epsilon
-
-                if phi_delta <= rhs_delta + c_check_tol:
+                if phi_plus <= (1.0 - t_k) * phi_x + t_k * philowk - alpha_plus * dzz:
                     x = xplus
                     phi_x = phi_plus
 
@@ -335,7 +358,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
                             restart_now = (np.dot(gy_cand, x_cand - x_prev) > 0.0)
 
                     if restart_now:
-                        print("Restarting Algorithm")
+                        # print("Restarting Algorithm")
                         trigger_restart = True
                         (
                             x,
@@ -355,11 +378,12 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
                         z = zplus
                         lambdak = lambda_plus
                         alpha_k = alpha_plus
-                        eta_k = np.inf if alpha_k == mu else 1.0 / (alpha_k - mu)
+                        eta_k = 0 if alpha_k == mu else 1.0 / (alpha_k - mu)
                         psi_z = extra_Psi(z)
                     break
 
                 current_c *= 2.0
+        '''
         if trigger_restart:
             print("current_c: {5:10.3e}", current_c)
             print("current_tk: {5:10.3e}", t_k)
@@ -367,25 +391,24 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
             print("Fallback to GD because c exceeded c_max")
             print("current_c: {5:10.3e}", current_c)
             print("current_tk: {5:10.3e}", t_k)
-
+        '''
+        
         F[k] = phi_x
         tk_hist[k] = t_k
         eta_hist[k] = eta_k
         ck_hist[k] = current_c
         alpha_hist[k] = alpha_k
+        L_hist[k] = current_L
         T[k] = time.time() - start_time
 
         if verbose and k % verbskip == 0:
             print(
                 "{0:6d}  {1:10.3e}  {2:10.3e}  {3:10.3e}  {4:10.3e}  {5:10.3e}  {6:6.1f}".format(
-                    k, F[k], eta_hist[k], tk_hist[k], current_L, current_c, T[k]
+                    k, F[k], eta_hist[k], tk_hist[k], L_hist[k], current_c, T[k]
                 )
             )
 
-        if eta_k < epsilon:
-            break
-
-        if eta_k < epsilon:
+        if (eta_k > 0) and (1.0 / eta_k) < epsilon:
             break
 
     return (
@@ -395,6 +418,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=1e-14, verbose=True, verbskip=
         eta_hist[:k + 1],
         ck_hist[:k + 1],
         alpha_hist[:k + 1],
+        L_hist[:k + 1],
         T[:k + 1],
     )
 

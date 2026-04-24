@@ -83,7 +83,7 @@ def infer_metric_ylim(series_list, logscale=False):
 
 
 def plot_abra_diagnostics(results: dict, *, title: str | None = None):
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+    fig, axes = plt.subplots(3, 2, figsize=(11, 10.5))
     keys = ["ABRA_GD", "ABRA_GD_g_RS", "ABRA_GD_f_RS"]
     labels = [r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["c-", "c--", "c:"]
@@ -95,12 +95,14 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
     c_series = [results[k]["c"] for k in keys]
     alpha_series = [results[k]["alpha"] for k in keys]
     eta_series = [np.where(np.isfinite(results[k]["eta"]), results[k]["eta"], np.nan) for k in keys]
+    L_series = [results[k]["L"] for k in keys]
 
     panels = [
         (axes[0, 0], t_series, r"$t_k$", "linear"),
         (axes[0, 1], c_series, r"$c_k$", "log"),
         (axes[1, 0], alpha_series, r"$\alpha_k$", "log"),
         (axes[1, 1], eta_series, r"$\eta_k$", "log"),
+        (axes[2, 0], L_series, r"$L_k$", "log"),
     ]
 
     xmax = max(max(len(s) - 1, 1) for s in t_series)
@@ -118,6 +120,8 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
         if ylim is not None:
             ax.set_ylim(ylim)
         ax.legend(loc="best")
+
+    axes[2, 1].axis("off")
 
     if title:
         fig.suptitle(title)
@@ -163,9 +167,9 @@ def main() -> None:
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=10000, theta_eq=True, verbskip=1000)
     x2e, F2e, _, _, T2e = accbpg.ABPG_expo(f, h, L, x0, gamma0=3, maxitrs=10000, theta_eq=False, Gmargin=3, verbskip=1000)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=10000, G0=0.1, theta_eq=False, verbskip=1000)
-    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=10000, mu=0.0, restart=False, verbskip=1000)
-    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=10000, mu=0.0, restart=True, restart_rule="g", verbskip=1000)
-    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=10000, mu=0.0, restart=True, restart_rule="f", verbskip=1000)
+    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=10000, mu=0.0, restart=False, verbskip=1)
+    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=10000, mu=0.0, restart=True, restart_rule="g", verbskip=1000)
+    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=10000, mu=0.0, restart=True, restart_rule="f", verbskip=1000)
 
     labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["k:", "g-", "b-.", "k-", "r--", "c-", "c--", "c:"]
@@ -175,9 +179,9 @@ def main() -> None:
     fig = make_comparison_figure(y_vals, t_vals, labels, styles, dashes, title=f"Poisson L1: m={m}, n={n}")
     figs.append((fig, "Poisson_m200n100_adapt.png"))
     abra_results = {
-        "ABRA_GD": {"t": tk_abra, "c": ck_abra, "alpha": alpha_abra, "eta": eta_abra},
-        "ABRA_GD_g_RS": {"t": tk_abrag, "c": ck_abrag, "alpha": alpha_abrag, "eta": eta_abrag},
-        "ABRA_GD_f_RS": {"t": tk_abraf, "c": ck_abraf, "alpha": alpha_abraf, "eta": eta_abraf},
+        "ABRA_GD": {"t": tk_abra, "c": ck_abra, "alpha": alpha_abra, "eta": eta_abra, "L": L_abra},
+        "ABRA_GD_g_RS": {"t": tk_abrag, "c": ck_abrag, "alpha": alpha_abrag, "eta": eta_abrag, "L": L_abrag},
+        "ABRA_GD_f_RS": {"t": tk_abraf, "c": ck_abraf, "alpha": alpha_abraf, "eta": eta_abraf, "L": L_abraf},
     }
     fig_diag = plot_abra_diagnostics(abra_results, title=f"ABRA diagnostics: Poisson L1, m={m}, n={n}")
     figs.append((fig_diag, "Poisson_m200n100_adapt_abra_diag.png"))
@@ -190,17 +194,17 @@ def main() -> None:
     x20_, F20_, _, T20_ = accbpg.ABPG(f2, h2, L2, x02, gamma=2.0, maxitrs=10000, theta_eq=False, verbskip=1000)
     x2e_, F2e_, _, _, T2e_ = accbpg.ABPG_expo(f2, h2, L2, x02, gamma0=3, maxitrs=10000, theta_eq=False, Gmargin=1, verbskip=1000)
     x2g_, F2g_, _, _, _, T2g_ = accbpg.ABPG_gain(f2, h2, L2, x02, gamma=2, maxitrs=10000, G0=0.1, ls_inc=1.5, ls_dec=1.5, theta_eq=True, verbskip=1000)
-    xabra_, Fabra_, tk_abra_, eta_abra_, ck_abra_, alpha_abra_, Tabra_ = accbpg.ABRA_GD(f2, h2, L2, x02, maxitrs=10000, mu=0.0, restart=False, verbskip=1000)
-    xabrag_, Fabrag_, tk_abrag_, eta_abrag_, ck_abrag_, alpha_abrag_, Tabrag_ = accbpg.ABRA_GD(f2, h2, L2, x02, maxitrs=10000, mu=0.0, restart=True, restart_rule="g", verbskip=1000)
-    xabraf_, Fabraf_, tk_abraf_, eta_abraf_, ck_abraf_, alpha_abraf_, Tabraf_ = accbpg.ABRA_GD(f2, h2, L2, x02, maxitrs=10000, mu=0.0, restart=True, restart_rule="f", verbskip=1000)
+    xabra_, Fabra_, tk_abra_, eta_abra_, ck_abra_, alpha_abra_, L_abra_, Tabra_ = accbpg.ABRA_GD(f2, h2, L2, x02, maxitrs=10000, mu=0.0, restart=False, verbskip=1000)
+    xabrag_, Fabrag_, tk_abrag_, eta_abrag_, ck_abrag_, alpha_abrag_, L_abrag_, Tabrag_ = accbpg.ABRA_GD(f2, h2, L2, x02, maxitrs=10000, mu=0.0, restart=True, restart_rule="g", verbskip=1000)
+    xabraf_, Fabraf_, tk_abraf_, eta_abraf_, ck_abraf_, alpha_abraf_, L_abraf_, Tabraf_ = accbpg.ABRA_GD(f2, h2, L2, x02, maxitrs=10000, mu=0.0, restart=True, restart_rule="f", verbskip=1000)
     y_vals = [F00_, FLS_, F20_, F2e_, F2g_, Fabra_, Fabrag_, Fabraf_]
     t_vals = [T00_, TLS_, T20_, T2e_, T2g_, Tabra_, Tabrag_, Tabraf_]
     fig = make_comparison_figure(y_vals, t_vals, labels, styles, dashes, title=f"Poisson L2: m={m2}, n={n2}")
     figs.append((fig, "Poisson_m100n1000_L2_adapt.png"))
     abra_results = {
-        "ABRA_GD": {"t": tk_abra_, "c": ck_abra_, "alpha": alpha_abra_, "eta": eta_abra_},
-        "ABRA_GD_g_RS": {"t": tk_abrag_, "c": ck_abrag_, "alpha": alpha_abrag_, "eta": eta_abrag_},
-        "ABRA_GD_f_RS": {"t": tk_abraf_, "c": ck_abraf_, "alpha": alpha_abraf_, "eta": eta_abraf_},
+        "ABRA_GD": {"t": tk_abra_, "c": ck_abra_, "alpha": alpha_abra_, "eta": eta_abra_, "L": L_abra_},
+        "ABRA_GD_g_RS": {"t": tk_abrag_, "c": ck_abrag_, "alpha": alpha_abrag_, "eta": eta_abrag_, "L": L_abrag_},
+        "ABRA_GD_f_RS": {"t": tk_abraf_, "c": ck_abraf_, "alpha": alpha_abraf_, "eta": eta_abraf_, "L": L_abraf_},
     }
     fig_diag = plot_abra_diagnostics(abra_results, title=f"ABRA diagnostics: Poisson L2, m={m2}, n={n2}")
     figs.append((fig_diag, "Poisson_m100n1000_L2_adapt_abra_diag.png"))

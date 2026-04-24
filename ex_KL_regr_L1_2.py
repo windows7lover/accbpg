@@ -84,7 +84,7 @@ def infer_metric_ylim(series_list, logscale=False):
 
 
 def plot_abra_diagnostics(results: dict, *, title: str | None = None):
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+    fig, axes = plt.subplots(3, 2, figsize=(11, 10.5))
     keys = ["ABRA_GD", "ABRA_GD_g_RS", "ABRA_GD_f_RS"]
     labels = [r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["c-", "c--", "c:"]
@@ -96,12 +96,14 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
     c_series = [results[k]["c"] for k in keys]
     alpha_series = [results[k]["alpha"] for k in keys]
     eta_series = [np.where(np.isfinite(results[k]["eta"]), results[k]["eta"], np.nan) for k in keys]
+    L_series = [results[k]["L"] for k in keys]
 
     panels = [
         (axes[0, 0], t_series, r"$t_k$", "linear"),
         (axes[0, 1], c_series, r"$c_k$", "log"),
         (axes[1, 0], alpha_series, r"$\alpha_k$", "log"),
         (axes[1, 1], eta_series, r"$\eta_k$", "log"),
+        (axes[2, 0], L_series, r"$L_k$", "log"),
     ]
 
     xmax = max(max(len(s) - 1, 1) for s in t_series)
@@ -120,6 +122,8 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
             ax.set_ylim(ylim)
         ax.legend(loc="best")
 
+    axes[2, 1].axis("off")
+
     if title:
         fig.suptitle(title)
     plt.tight_layout(w_pad=3.0, h_pad=2.0)
@@ -127,18 +131,18 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
 
 def run_experiment(m: int, n: int, *, maxitrs: int = 5000, verbskip: int = 1000):
     f, h, L, x0 = accbpg.KL_nonneg_regr(
-        m, n, noise=0.01, lamdaL1=0.001, normalizeA=True, randseed=1
+        m, n, noise=0.01, lamdaL1=0.1, normalizeA=False, randseed=1
     )
 
+    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=False, verbskip=verbskip)
+    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="g", verbskip=verbskip)
+    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="f", verbskip=verbskip)
     x00, F00, _, T00 = accbpg.BPG(f, h, L, x0, maxitrs=maxitrs, linesearch=False, verbskip=verbskip)
     xLS, FLS, _, TLS = accbpg.BPG(f, h, L, x0, maxitrs=maxitrs, linesearch=True, ls_ratio=1.2, verbskip=verbskip)
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=maxitrs, theta_eq=True, restart=False, verbskip=verbskip)
     x20rs, F20rs, _, T20rs = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=maxitrs, theta_eq=True, restart=True, verbskip=verbskip)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=maxitrs, G0=0.1, theta_eq=True, restart=False, verbskip=verbskip)
     x2grs, F2grs, _, _, _, T2grs = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=maxitrs, G0=0.1, theta_eq=True, restart=True, restart_rule="f", verbskip=verbskip)
-    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=False, verbskip=verbskip)
-    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="g", verbskip=verbskip)
-    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="f", verbskip=verbskip)
 
     return {
         "BPG": {"F": F00, "T": T00},
@@ -147,9 +151,9 @@ def run_experiment(m: int, n: int, *, maxitrs: int = 5000, verbskip: int = 1000)
         "ABPG_RS": {"F": F20rs, "T": T20rs},
         "ABPG_g": {"F": F2g, "T": T2g},
         "ABPG_g_RS": {"F": F2grs, "T": T2grs},
-        "ABRA_GD": {"F": Fabra, "T": Tabra, "t": tk_abra, "eta": eta_abra, "c": ck_abra, "alpha": alpha_abra},
-        "ABRA_GD_g_RS": {"F": Fabrag, "T": Tabrag, "t": tk_abrag, "eta": eta_abrag, "c": ck_abrag, "alpha": alpha_abrag},
-        "ABRA_GD_f_RS": {"F": Fabraf, "T": Tabraf, "t": tk_abraf, "eta": eta_abraf, "c": ck_abraf, "alpha": alpha_abraf},
+        "ABRA_GD": {"F": Fabra, "T": Tabra, "t": tk_abra, "eta": eta_abra, "c": ck_abra, "alpha": alpha_abra, "L": L_abra},
+        "ABRA_GD_g_RS": {"F": Fabrag, "T": Tabrag, "t": tk_abrag, "eta": eta_abrag, "c": ck_abrag, "alpha": alpha_abrag, "L": L_abrag},
+        "ABRA_GD_f_RS": {"F": Fabraf, "T": Tabraf, "t": tk_abraf, "eta": eta_abraf, "c": ck_abraf, "alpha": alpha_abraf, "L": L_abraf},
     }
 
 

@@ -83,7 +83,7 @@ def infer_metric_ylim(series_list, logscale=False):
 
 
 def plot_abra_diagnostics(results: dict, *, title: str | None = None):
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+    fig, axes = plt.subplots(3, 2, figsize=(11, 10.5))
     keys = ["ABRA_GD", "ABRA_GD_g_RS", "ABRA_GD_f_RS"]
     labels = [r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["c-", "c--", "c:"]
@@ -95,12 +95,14 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
     c_series = [results[k]["c"] for k in keys]
     alpha_series = [results[k]["alpha"] for k in keys]
     eta_series = [np.where(np.isfinite(results[k]["eta"]), results[k]["eta"], np.nan) for k in keys]
+    L_series = [results[k]["L"] for k in keys]
 
     panels = [
         (axes[0, 0], t_series, r"$t_k$", "linear"),
         (axes[0, 1], c_series, r"$c_k$", "log"),
         (axes[1, 0], alpha_series, r"$\alpha_k$", "log"),
         (axes[1, 1], eta_series, r"$\eta_k$", "log"),
+        (axes[2, 0], L_series, r"$L_k$", "log"),
     ]
 
     xmax = max(max(len(s) - 1, 1) for s in t_series)
@@ -118,6 +120,8 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
         if ylim is not None:
             ax.set_ylim(ylim)
         ax.legend(loc="best")
+
+    axes[2, 1].axis("off")
 
     if title:
         fig.suptitle(title)
@@ -156,7 +160,7 @@ def main() -> None:
     figs: list[tuple[plt.Figure, str]] = []
 
     m = 80
-    n = 200
+    n = 400
     f, h, L, x0 = accbpg.D_opt_design(m, n, randseed=10)
 
     x00, F00, _, T00 = accbpg.BPG(f, h, L, x0, maxitrs=1000, linesearch=False, verbskip=100)
@@ -164,9 +168,9 @@ def main() -> None:
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=1000, theta_eq=True, verbskip=100)
     x2e, F2e, _, _, T2e = accbpg.ABPG_expo(f, h, L, x0, gamma0=3, maxitrs=1000, theta_eq=True, verbskip=100)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, verbskip=100)
-    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=False, verbskip=100)
-    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
-    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
+    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=False, verbskip=100)
+    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
+    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
 
     labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["k:", "g-", "b-.", "k-", "r--", "c-", "c--", "c:"]
@@ -177,13 +181,14 @@ def main() -> None:
     fig = make_comparison_figure(y_vals, t_vals, labels, styles, dashes, title=f"D-optimal random: m={m}, n={n}")
     figs.append((fig, "D_opt_m80n200_adapt.png"))
     abra_results = {
-        "ABRA_GD": {"t": tk_abra, "c": ck_abra, "alpha": alpha_abra, "eta": eta_abra},
-        "ABRA_GD_g_RS": {"t": tk_abrag, "c": ck_abrag, "alpha": alpha_abrag, "eta": eta_abrag},
-        "ABRA_GD_f_RS": {"t": tk_abraf, "c": ck_abraf, "alpha": alpha_abraf, "eta": eta_abraf},
+        "ABRA_GD": {"t": tk_abra, "c": ck_abra, "alpha": alpha_abra, "eta": eta_abra, "L": L_abra},
+        "ABRA_GD_g_RS": {"t": tk_abrag, "c": ck_abrag, "alpha": alpha_abrag, "eta": eta_abrag, "L": L_abrag},
+        "ABRA_GD_f_RS": {"t": tk_abraf, "c": ck_abraf, "alpha": alpha_abraf, "eta": eta_abraf, "L": L_abraf},
     }
     fig_diag = plot_abra_diagnostics(abra_results, title=f"ABRA diagnostics: D-optimal random, m={m}, n={n}")
     figs.append((fig_diag, "D_opt_m80n200_adapt_abra_diag.png"))
-
+    
+    '''
     ms = 80
     ns = 120
     fs, hs, Ls, x0s = accbpg.D_opt_design(ms, ns, randseed=10)
@@ -194,9 +199,9 @@ def main() -> None:
     xs20rs, Fs20rs, _, Ts20rs = accbpg.ABPG(fs, hs, Ls, x0s, gamma=2.0, maxitrs=1000, theta_eq=True, restart=True, verbskip=100)
     xs2g, Fs2g, _, _, _, Ts2g = accbpg.ABPG_gain(fs, hs, Ls, x0s, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, restart=False, verbskip=100)
     xs2grs, Fs2grs, _, _, _, Ts2grs = accbpg.ABPG_gain(fs, hs, Ls, x0s, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, restart=True, verbskip=100)
-    xsabra, Fsabra, tks_abra, etas_abra, cks_abra, alphas_abra, Tsabra = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=False, verbskip=100)
-    xsabrag, Fsabrag, tks_abrag, etas_abrag, cks_abrag, alphas_abrag, Tsabrag = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
-    xsabraf, Fsabraf, tks_abraf, etas_abraf, cks_abraf, alphas_abraf, Tsabraf = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
+    xsabra, Fsabra, tks_abra, etas_abra, cks_abra, alphas_abra, Ls_abra, Tsabra = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=False, verbskip=100)
+    xsabrag, Fsabrag, tks_abrag, etas_abrag, cks_abrag, alphas_abrag, Ls_abrag, Tsabrag = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
+    xsabraf, Fsabraf, tks_abraf, etas_abraf, cks_abraf, alphas_abraf, Ls_abraf, Tsabraf = accbpg.ABRA_GD(fs, hs, Ls, x0s, maxitrs=1000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
 
     labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG RS", r"ABPG-g", r"ABPG-g RS", r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["k:", "g-", "b-.", "m-", "k-", "r--", "c-", "c--", "c:"]
@@ -206,7 +211,7 @@ def main() -> None:
 
     fig = make_comparison_figure(y_vals, t_vals, labels, styles, dashes, title=f"D-optimal random restart: m={ms}, n={ns}")
     figs.append((fig, "D_opt_m80n120_restart.png"))
-
+    '''
     if args.save_dir is not None:
         for fig, name in figs:
             save_figure(fig, args.save_dir / name)

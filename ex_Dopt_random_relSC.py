@@ -142,14 +142,14 @@ def main() -> None:
     n = 200
     f, h, L, x0 = make_problem(m, n, mu=mu, randseed=10)
 
+    xabra, Fabra, _, _, _, _, _, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=mu, restart=False, verbskip=100)
+    xabrag, Fabrag, _, _, _, _, _, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=mu, restart=True, restart_rule="g", verbskip=100)
+    xabraf, Fabraf, _, _, _, _, _, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=mu, restart=True, restart_rule="f", verbskip=100)
     x00, F00, _, T00 = accbpg.BPG(f, h, L, x0, maxitrs=1000, linesearch=False, verbskip=100)
     xLS, FLS, _, TLS = accbpg.BPG(f, h, L, x0, maxitrs=1000, linesearch=True, verbskip=100)
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=1000, theta_eq=True, verbskip=100)
     x2e, F2e, _, _, T2e = accbpg.ABPG_expo(f, h, L, x0, gamma0=3, maxitrs=1000, theta_eq=True, verbskip=100)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, verbskip=100)
-    xabra, Fabra, _, _, _, _, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=900, mu=mu, restart=False, verbskip=100)
-    xabrag, Fabrag, _, _, _, _, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=900, mu=mu, restart=True, restart_rule="g", verbskip=100)
-    xabraf, Fabraf, _, _, _, _, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=900, mu=mu, restart=True, restart_rule="f", verbskip=100)
 
     labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["k:", "g-", "b-.", "k-", "r--", "c-", "c--", "c:"]

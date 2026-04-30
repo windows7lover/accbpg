@@ -163,14 +163,14 @@ def main() -> None:
     n = 400
     f, h, L, x0 = accbpg.D_opt_design(m, n, randseed=10)
 
-    x00, F00, _, T00 = accbpg.BPG(f, h, L, x0, maxitrs=1000, linesearch=False, verbskip=100)
-    xLS, FLS, _, TLS = accbpg.BPG(f, h, L, x0, maxitrs=1000, linesearch=True, verbskip=100)
-    x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=1000, theta_eq=True, verbskip=100)
-    x2e, F2e, _, _, T2e = accbpg.ABPG_expo(f, h, L, x0, gamma0=3, maxitrs=1000, theta_eq=True, verbskip=100)
+    x00, F00, _, T00 = accbpg.BPG(f, h, L, x0, maxitrs=3000, linesearch=False, verbskip=100)
+    xLS, FLS, _, TLS = accbpg.BPG(f, h, L, x0, maxitrs=3000, linesearch=True, verbskip=100)
+    x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=3000, theta_eq=True, verbskip=100)
+    x2e, F2e, _, _, T2e = accbpg.ABPG_expo(f, h, L, x0, gamma0=3, maxitrs=3000, theta_eq=True, verbskip=100)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=3000, G0=0.1, theta_eq=True, verbskip=100)
-    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=False, verbskip=100)
-    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
-    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
+    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=3000, mu=0.0, restart=False, verbskip=100)
+    xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=3000, mu=0.0, restart=True, restart_rule="g", verbskip=100)
+    xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=3000, mu=0.0, restart=True, restart_rule="f", verbskip=100)
 
     labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
     styles = ["k:", "g-", "b-.", "k-", "r--", "c-", "c--", "c:"]

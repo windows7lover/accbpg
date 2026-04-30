@@ -161,7 +161,7 @@ def fallback_gd_step(x, current_L, func_grad, f_eval, extra_Psi,
 
 def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x_anchor, dx_anchor, current_L, psi_z,
                func_grad, f_eval, grad_h, extra_Psi, div_prox_map, divergence,
-               local_z=True):
+               local_z=False):
     """
     One generic primal-dual Bregman step for k >= 1.
 
@@ -190,13 +190,37 @@ def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x_anchor, dx_anchor, current_L, 
     dual_target = gy - mu * (dy - dx_anchor)
     lambda_plus = lambdak + t_k * (dual_target - lambdak)
 
+    '''
     if local_z:
         dz = grad_h(z)
         local_linear = t_k * (gy - mu * (dy - dz))
         zplus = div_prox_map(z, local_linear, alpha_plus)
     else:
         zplus = div_prox_map(x_anchor, lambda_plus, alpha_plus)
+    '''
+    
+    if local_z:
+        dz = grad_h(z)
 
+        theta = t_k * mu / alpha_plus
+
+        # zbar satisfies:
+        # ∇d(zbar) = (1 - theta) ∇d(z_k) + theta ∇d(y_k)
+        zbar = div_prox_map(
+            z,
+            -theta * (dy - dz),
+            1.0,
+        )
+
+        # z_{k+1} = argmin_x t_k <∇φ(y_k), x> + α_{k+1} D_d(x, zbar)
+        zplus = div_prox_map(
+            zbar,
+            t_k * gy,
+            alpha_plus,
+        )
+    else:
+        zplus = div_prox_map(x_anchor, lambda_plus, alpha_plus)
+    
     dzz = divergence(zplus, z)
 
     xplus, fplus, current_L = backtracking_gradient(

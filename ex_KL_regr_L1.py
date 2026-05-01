@@ -4,7 +4,7 @@ Example: KL-divergence nonnegative regression with random datasets.
 
 Adaptive/restart comparison only:
 - left subplot: objective gap vs iteration
-- right subplot: objective gap vs time
+- right subplot: objective gap vs oracle calls
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def run_experiment(
     lamdaL1: float = 0.0,
     normalizeA: bool = True,
     randseed: int = 1,
-    maxitrs: int = 5000,
+    maxitrs: int = 4000,
     verbskip: int = 1000,
 ):
     f, h, L, x0 = accbpg.KL_nonneg_regr(
@@ -265,7 +265,7 @@ def plot_experiment(results: dict, *, title: str | None = None):
         plotdiff=True,
         yscale="log",
         ylim=list(gap_ylim),
-        xlabel="Time (s)",
+        xlabel="Oracle calls",
         ylabel=r"$F(x_k)-F_\star$",
         legendloc="best",
         linestyles=styles,
@@ -280,7 +280,7 @@ def plot_experiment(results: dict, *, title: str | None = None):
 
 def main():
     parser = argparse.ArgumentParser(description="Run KL-divergence nonnegative regression experiments.")
-    parser.add_argument("--maxitrs", type=int, default=5000, help="Maximum iterations per method.")
+    parser.add_argument("--maxitrs", type=int, default=4000, help="Maximum iterations per method.")
     parser.add_argument("--verbskip", type=int, default=1000, help="Verbosity skip passed to methods.")
     parser.add_argument("--save-dir", type=Path, default=None, help="Directory where figures will be saved.")
     parser.add_argument("--no-show", action="store_true", help="Do not display figures.")

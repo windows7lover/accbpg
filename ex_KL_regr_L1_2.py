@@ -4,7 +4,7 @@ Example: KL-divergence nonnegative regression with random datasets (restart comp
 
 Adaptive/restart comparison only:
 - left subplot: objective gap vs iteration
-- right subplot: objective gap vs time
+- right subplot: objective gap vs oracle calls
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ def plot_experiment(results: dict, *, title: str):
     ax2 = plt.subplot(1, 2, 2)
     accbpg.plot_comparisons(
         ax2, y_vals, labels, x_vals=t_vals, plotdiff=True, yscale="log", ylim=list(gap_ylim),
-        xlabel="Time (s)", ylabel=r"$F(x_k)-F_\star$", legendloc="best",
+        xlabel="Oracle calls", ylabel=r"$F(x_k)-F_\star$", legendloc="best",
         linestyles=styles, linedash=dashes
     )
 

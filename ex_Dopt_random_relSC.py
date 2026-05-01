@@ -9,7 +9,7 @@ then the new smooth part is (1+mu)-smooth and mu-strongly convex relative to h.
 
 Figures kept:
 - objective gap vs iteration
-- objective gap vs time
+- objective gap vs oracle calls
 - ABRA-GD diagnostics
 """
 
@@ -180,7 +180,7 @@ def make_comparison_figure(y_vals, t_vals, labels, styles, dashes, *, title: str
     ax2 = plt.subplot(1, 2, 2)
     accbpg.plot_comparisons(
         ax2, y_vals, labels, x_vals=t_vals, plotdiff=True, yscale="log",
-        ylim=list(gap_ylim), xlabel="Time (s)", ylabel=r"$F(x_k)-F_\star$",
+        ylim=list(gap_ylim), xlabel="Oracle calls", ylabel=r"$F(x_k)-F_\star$",
         legendloc="best", linestyles=styles, linedash=dashes,
     )
 

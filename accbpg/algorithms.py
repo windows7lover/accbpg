@@ -8,6 +8,34 @@ import warnings
 from dataclasses import dataclass
 
 
+class CountedFunction:
+    """Wrap a smooth objective and count calls to f, gradient, and func_grad.
+
+    A call to func_grad(..., flag=2) counts as one oracle call, not two,
+    since it is a joint function/gradient query.
+    """
+    def __init__(self, f):
+        self._f = f
+        self.oracle_calls = 0
+
+    def __getattr__(self, name):
+        return getattr(self._f, name)
+
+    def __call__(self, x):
+        self.oracle_calls += 1
+        return self._f(x)
+
+    def gradient(self, x):
+        self.oracle_calls += 1
+        return self._f.gradient(x)
+
+    def func_grad(self, x, flag=2):
+        self.oracle_calls += 1
+        return self._f.func_grad(x, flag=flag)
+
+    def reset_oracle_calls(self):
+        self.oracle_calls = 0
+
 
 def positive_tk_eta(eta_k, mu, M):
     """Positive root in eta-form; returns t=1 for the limiting eta_k=0 initialization."""
@@ -145,7 +173,7 @@ class AbraHistories:
     alpha: np.ndarray
     L: np.ndarray
     rho_eff: np.ndarray
-    T: np.ndarray
+    T: np.ndarray  # oracle calls
 
     @classmethod
     def allocate(cls, maxitrs):
@@ -247,7 +275,7 @@ def BregPDStep(state, eta_plus_inv, t_k, tau_k, mu, oracles,
     dzz = oracles.divergence(zplus, state.z)
 
     xplus, fplus, L_cur = backtracking_gradient(
-        y, fy, gy, state.L_cur / 2.0, oracles.f_eval,
+        y, fy, gy, state.L_cur, oracles.f_eval,
         oracles.div_prox_map, oracles.divergence,
         max_backtracks=max_backtracks,
     )
@@ -319,11 +347,12 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
     """
     _validate_abra_inputs(L, maxitrs, mu, restart_rule)
 
+    f = CountedFunction(f)
     oracles = AbraOracles.from_problem(f, h)
 
     if verbose:
         print("\nABRA_GD method for min_{x in C} F(x) = f(x) + Psi(x)")
-        print("     k      F(x)       eta_k        t_k         L_k         M_k      time")
+        print("     k      F(x)       eta_k        t_k         L_k         M_k     calls")
 
     start_time = time.time()
     hist = AbraHistories.allocate(maxitrs)
@@ -402,7 +431,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
 
             state.M_cur *= 2.0
 
-        hist.record(k, state, t_k, tau_k, mu, time.time() - start_time)
+        hist.record(k, state, t_k, tau_k, mu, f.oracle_calls)
 
         if verbose and k % verbskip == 0:
             print(
@@ -441,12 +470,14 @@ def BPG(f, h, L, x0, maxitrs, epsilon=0, linesearch=True, ls_ratio=1.2,
         x:  the last iterate of BPG
         F:  array storing F(x[k]) for all k
         Ls: array storing local Lipschitz constants obtained by line search
-        T:  array storing time used up to iteration k
+        T:  array storing oracle calls used up to iteration k
     """
+
+    f = CountedFunction(f)
 
     if verbose:
         print("\nBPG_LS method for min_{x in C} F(x) = f(x) + Psi(x)")
-        print("     k      F(x)         Lk       time")
+        print("     k      F(x)         Lk      calls")
     
     start_time = time.time()
     F = np.zeros(maxitrs)
@@ -457,7 +488,7 @@ def BPG(f, h, L, x0, maxitrs, epsilon=0, linesearch=True, ls_ratio=1.2,
     for k in range(maxitrs):
         fx, g = f.func_grad(x)
         F[k] = fx + h.extra_Psi(x)
-        T[k] = time.time() - start_time
+        T[k] = f.oracle_calls
         
         if linesearch:
             L = L / ls_ratio
@@ -525,13 +556,15 @@ def ABPG(f, h, L, x0, gamma, maxitrs, epsilon=1e-14, theta_eq=False,
         x: the last iterate of BPG
         F: array storing F(x[k]) for all k
         G: triangle scaling gains D(xk,yk) / D(zk,zk_1) / theta_k^gamma
-        T: array storing time used up to iteration k
+        T: array storing oracle calls used up to iteration k
     """
+
+    f = CountedFunction(f)
 
     if verbose:
         print("\nABPG method for minimize_{x in C} F(x) = f(x) + Psi(x)")
         print("     k      F(x)       theta" + 
-              "        TSG       D(x+,y)     D(z+,z)     time")
+              "        TSG       D(x+,y)     D(z+,z)    calls")
     
     start_time = time.time()
     F = np.zeros(maxitrs)
@@ -546,7 +579,7 @@ def ABPG(f, h, L, x0, gamma, maxitrs, epsilon=1e-14, theta_eq=False,
         # function value at previous iteration
         fx = f(x)   
         F[k] = fx + h.extra_Psi(x)
-        T[k] = time.time() - start_time
+        T[k] = f.oracle_calls
         
         # Update three iterates x, y and z
         z_1 = z
@@ -619,9 +652,11 @@ def ABPG_expo(f, h, L, x0, gamma0, maxitrs, epsilon=1e-14, delta=0.2,
         F:  array storing F(x[k]) for all k
         Gamma: gamma_k obtained at each iteration
         G:  triangle scaling gains D(xk,yk)/D(zk,zk_1)/theta_k^gamma_k
-        T:  array storing time used up to iteration k
+        T:  array storing oracle calls used up to iteration k
     """
     
+    f = CountedFunction(f)
+
     if verbose:
         print("\nABPG_expo method for min_{x in C} F(x) = f(x) + Psi(x)")
         print("     k      F(x)       theta       gamma" +
@@ -642,7 +677,7 @@ def ABPG_expo(f, h, L, x0, gamma0, maxitrs, epsilon=1e-14, delta=0.2,
         # function value at previous iteration
         fx = f(x)   
         F[k] = fx + h.extra_Psi(x)
-        T[k] = time.time() - start_time
+        T[k] = f.oracle_calls
         
         # Update three iterates x, y and z
         z_1 = z
@@ -733,12 +768,14 @@ def ABPG_gain(f, h, L, x0, gamma, maxitrs, epsilon=1e-14, G0=1,
         Gain: triangle scaling gains G_k obtained by LS at each iteration
         Gdiv: triangle scaling gains D(xk,yk)/D(zk,zk_1)/theta_k^gamma_k
         Gavg: geometric mean of G_k at all steps up to iteration k
-        T:  array storing time used up to iteration k
+        T:  array storing oracle calls used up to iteration k
     """
+    f = CountedFunction(f)
+
     if verbose:
         print("\nABPG_gain method for min_{x in C} F(x) = f(x) + Psi(x)")
         print("     k      F(x)       theta         Gk" + 
-              "         TSG       D(x+,y)     D(z+,z)      Gavg       time")
+              "         TSG       D(x+,y)     D(z+,z)      Gavg      calls")
 
     start_time = time.time()    
     F = np.zeros(maxitrs)
@@ -758,7 +795,7 @@ def ABPG_gain(f, h, L, x0, gamma, maxitrs, epsilon=1e-14, G0=1,
         # function value at previous iteration
         fx = f(x)   
         F[k] = fx + h.extra_Psi(x)
-        T[k] = time.time() - start_time
+        T[k] = f.oracle_calls
         
         # Update three iterates x, y and z
         z_1 = z
@@ -852,11 +889,13 @@ def ABDA(f, h, L, x0, gamma, maxitrs, epsilon=1e-14, theta_eq=True,
         x: the last iterate of BPG
         F: array storing F(x[k]) for all k
         G: triangle scaling gains D(xk,yk)/D(zk,zk_1)/theta_k^gamma
-        T: array storing time used up to iteration k
+        T: array storing oracle calls used up to iteration k
     """
     # Simple restart schemes for dual averaging method do not work!
     restart = False
     
+    f = CountedFunction(f)
+
     if verbose:
         print("\nABDA method for min_{x in C} F(x) = f(x) + Psi(x)")
         print("     k      F(x)       theta" + 
@@ -877,7 +916,7 @@ def ABDA(f, h, L, x0, gamma, maxitrs, epsilon=1e-14, theta_eq=True,
         # function value at previous iteration
         fx = f(x)   
         F[k] = fx + h.extra_Psi(x)
-        T[k] = time.time() - start_time
+        T[k] = f.oracle_calls
         
         # Update three iterates x, y and z
         z_1 = z

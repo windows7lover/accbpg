@@ -131,14 +131,14 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
 
 def run_experiment(m: int, n: int, *, maxitrs: int = 5000, verbskip: int = 1000):
     f, h, L, x0 = accbpg.KL_nonneg_regr(
-        m, n, noise=0.01, lamdaL1=0.1, normalizeA=False, randseed=1
+        m, n, noise=0.01, lamdaL1=0.0, normalizeA=False, randseed=1
     )
 
     xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=False, verbskip=verbskip)
     xabrag, Fabrag, tk_abrag, eta_abrag, ck_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="g", verbskip=verbskip)
     xabraf, Fabraf, tk_abraf, eta_abraf, ck_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=maxitrs, mu=0.0, restart=True, restart_rule="f", verbskip=verbskip)
     x00, F00, _, T00 = accbpg.BPG(f, h, L, x0, maxitrs=maxitrs, linesearch=False, verbskip=verbskip)
-    xLS, FLS, _, TLS = accbpg.BPG(f, h, L, x0, maxitrs=maxitrs, linesearch=True, ls_ratio=1.2, verbskip=verbskip)
+    xLS, FLS, _, TLS = accbpg.BPG(f, h, L, x0, maxitrs=5*maxitrs, linesearch=True, ls_ratio=1.2, verbskip=verbskip)
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=maxitrs, theta_eq=True, restart=False, verbskip=verbskip)
     x20rs, F20rs, _, T20rs = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=maxitrs, theta_eq=True, restart=True, verbskip=verbskip)
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(f, h, L, x0, gamma=2, maxitrs=maxitrs, G0=0.1, theta_eq=True, restart=False, verbskip=verbskip)

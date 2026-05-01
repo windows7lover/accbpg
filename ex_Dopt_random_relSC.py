@@ -10,6 +10,7 @@ then the new smooth part is (1+mu)-smooth and mu-strongly convex relative to h.
 Figures kept:
 - objective gap vs iteration
 - objective gap vs time
+- ABRA-GD diagnostics
 """
 
 from __future__ import annotations
@@ -89,6 +90,81 @@ def infer_plot_window(y_vals, x_pad_frac: float = 0.02):
     return (-pad, kmax + pad), (ymin, ymax)
 
 
+
+def infer_metric_ylim(series_list, logscale=False):
+    vals = []
+    for s in series_list:
+        a = np.asarray(s, dtype=float)
+        if logscale:
+            a = a[np.isfinite(a) & (a > 0)]
+        else:
+            a = a[np.isfinite(a)]
+        if a.size:
+            vals.append(a)
+    if not vals:
+        return None
+    allv = np.concatenate(vals)
+    if logscale:
+        ymin = 10.0 ** np.floor(np.log10(np.min(allv)))
+        ymax = 10.0 ** np.ceil(np.log10(np.max(allv)))
+        if ymin == ymax:
+            ymax = 10.0 * ymin
+        return ymin, ymax
+    ymin = np.min(allv)
+    ymax = np.max(allv)
+    if ymin == ymax:
+        pad = 1.0 if ymin == 0 else 0.1 * abs(ymin)
+        return ymin - pad, ymax + pad
+    pad = 0.05 * (ymax - ymin)
+    return ymin - pad, ymax + pad
+
+
+def plot_abra_diagnostics(results: dict, *, title: str | None = None):
+    fig, axes = plt.subplots(3, 2, figsize=(11, 10.5))
+    keys = ["ABRA_GD", "ABRA_GD_g_RS", "ABRA_GD_f_RS"]
+    labels = [r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
+    styles = ["c-", "c--", "c:"]
+    dashes = [[6, 2], [2, 2], [1, 1]]
+
+    xvals = [np.arange(len(results[k]["t"])) for k in keys]
+
+    t_series = [results[k]["t"] for k in keys]
+    M_series = [results[k]["M"] for k in keys]
+    alpha_series = [results[k]["alpha"] for k in keys]
+    eta_series = [np.where(np.isfinite(results[k]["eta"]), results[k]["eta"], np.nan) for k in keys]
+    L_series = [results[k]["L"] for k in keys]
+
+    panels = [
+        (axes[0, 0], t_series, r"$t_k$", "linear"),
+        (axes[0, 1], M_series, r"$M_k$", "log"),
+        (axes[1, 0], alpha_series, r"$\alpha_k$", "log"),
+        (axes[1, 1], eta_series, r"$\eta_k$", "log"),
+        (axes[2, 0], L_series, r"$L_k$", "log"),
+    ]
+
+    xmax = max(max(len(s) - 1, 1) for s in t_series)
+    xpad = max(1, int(np.ceil(0.02 * xmax)))
+    xlim = (-xpad, xmax + xpad)
+
+    for ax, series, ylabel, yscale in panels:
+        for xi, yi, lab, sty, dash in zip(xvals, series, labels, styles, dashes):
+            ax.plot(xi, yi, sty, label=lab, dashes=dash)
+        ax.set_xlim(xlim)
+        ax.set_xlabel(r"Iteration number $k$")
+        ax.set_ylabel(ylabel)
+        ax.set_yscale(yscale)
+        ylim = infer_metric_ylim(series, logscale=(yscale == "log"))
+        if ylim is not None:
+            ax.set_ylim(ylim)
+        ax.legend(loc="best")
+
+    axes[2, 1].axis("off")
+
+    if title:
+        fig.suptitle(title)
+    plt.tight_layout(w_pad=3.0, h_pad=2.0)
+    return fig
+
 def make_comparison_figure(y_vals, t_vals, labels, styles, dashes, *, title: str):
     fig, _ = plt.subplots(1, 2, figsize=(11, 4))
     iter_xlim, gap_ylim = infer_plot_window(y_vals)
@@ -142,9 +218,15 @@ def main() -> None:
     n = 200
     f, h, L, x0 = make_problem(m, n, mu=mu, randseed=10)
 
-    xabra, Fabra, _, _, _, _, _, Tabra = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=mu, restart=False, verbskip=100)
-    xabrag, Fabrag, _, _, _, _, _, Tabrag = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=mu, restart=True, restart_rule="g", verbskip=100)
-    xabraf, Fabraf, _, _, _, _, _, Tabraf = accbpg.ABRA_GD(f, h, L, x0, maxitrs=1000, mu=mu, restart=True, restart_rule="f", verbskip=100)
+    xabra, Fabra, tk_abra, eta_abra, M_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
+        f, h, L, x0, maxitrs=1000, mu=mu, restart=False, verbskip=100
+    )
+    xabrag, Fabrag, tk_abrag, eta_abrag, M_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(
+        f, h, L, x0, maxitrs=1000, mu=mu, restart=True, restart_rule="g", verbskip=100
+    )
+    xabraf, Fabraf, tk_abraf, eta_abraf, M_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(
+        f, h, L, x0, maxitrs=1000, mu=mu, restart=True, restart_rule="f", verbskip=100
+    )
     x00, F00, _, T00 = accbpg.BPG(f, h, L, x0, maxitrs=1000, linesearch=False, verbskip=100)
     xLS, FLS, _, TLS = accbpg.BPG(f, h, L, x0, maxitrs=1000, linesearch=True, verbskip=100)
     x20, F20, _, T20 = accbpg.ABPG(f, h, L, x0, gamma=2.0, maxitrs=1000, theta_eq=True, verbskip=100)
@@ -163,6 +245,16 @@ def main() -> None:
     )
     figs.append((fig, f"D_opt_relSC_m{m}n{n}_mu{mu:g}_adapt.png"))
 
+    abra_results = {
+        "ABRA_GD": {"t": tk_abra, "M": M_abra, "alpha": alpha_abra, "eta": eta_abra, "L": L_abra},
+        "ABRA_GD_g_RS": {"t": tk_abrag, "M": M_abrag, "alpha": alpha_abrag, "eta": eta_abrag, "L": L_abrag},
+        "ABRA_GD_f_RS": {"t": tk_abraf, "M": M_abraf, "alpha": alpha_abraf, "eta": eta_abraf, "L": L_abraf},
+    }
+    fig_diag = plot_abra_diagnostics(
+        abra_results,
+        title=f"ABRA diagnostics: RelSC D-optimal random, m={m}, n={n}, mu={mu:g}",
+    )
+    figs.append((fig_diag, f"D_opt_relSC_m{m}n{n}_mu{mu:g}_adapt_abra_diag.png"))
 
     if args.save_dir is not None:
         for fig, name in figs:

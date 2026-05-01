@@ -5,6 +5,31 @@
 import numpy as np
 
 
+def _as_float_array(x):
+    return np.asarray(x, dtype=float)
+
+
+def _require_finite_positive(x, name, strict=True):
+    x = _as_float_array(x)
+    if not np.all(np.isfinite(x)):
+        raise ValueError(f"{name} contains non-finite values.")
+    ok = np.all(x > 0) if strict else np.all(x >= 0)
+    if not ok:
+        op = "> 0" if strict else ">= 0"
+        raise ValueError(f"{name} must satisfy {op}.")
+    return x
+
+
+def _xlogx_over_y(x, y):
+    """Return x*log(x/y), with the convention 0*log(0/y)=0."""
+    x = _as_float_array(x)
+    y = _as_float_array(y)
+    out = np.zeros_like(x, dtype=float)
+    mask = x > 0
+    out[mask] = x[mask] * (np.log(x[mask]) - np.log(y[mask]))
+    return out
+
+
 class RSmoothFunction:
     """
     Relatively-Smooth Function, can query f(x) and gradient
@@ -39,46 +64,32 @@ class DOptimalObj(RSmoothFunction):
         return self.func_grad(x, flag=1)
         
     def func_grad(self, x, flag=2):
-        assert x.size == self.n, "DOptimalObj: x.size not equal to n"
-        assert x.min() >= 0,     "DOptimalObj: x needs to be nonnegative"
-        HXHT = np.dot(self.H*x, self.H.T)
-        
-        if flag == 0:       # only return function value
-            f = -np.log(np.linalg.det(HXHT))
-            return f
-        
-        HXHTinvH = np.dot(np.linalg.inv(HXHT), self.H)
-        g = - np.sum(self.H * HXHTinvH, axis=0)
+        x = _require_finite_positive(x, "DOptimalObj: x", strict=False)
+        if x.size != self.n:
+            raise ValueError("DOptimalObj: x.size not equal to n")
 
-        if flag == 1:       # only return gradient
+        HXHT = (self.H * x) @ self.H.T
+        HXHT = 0.5 * (HXHT + HXHT.T)  # remove roundoff asymmetry
+
+        sign, logdet = np.linalg.slogdet(HXHT)
+        if sign <= 0 or not np.isfinite(logdet):
+            raise ValueError("DOptimalObj: H diag(x) H.T is not positive definite.")
+
+        if flag == 0:
+            return -logdet
+
+        # Avoid forming the inverse.  solve(HXHT, H) = HXHT^{-1} H.
+        solved = np.linalg.solve(HXHT, self.H)
+        g = -np.einsum("ij,ij->j", self.H, solved)
+
+        if flag == 1:
             return g
-        
-        # return both function value and gradient
-        f = -np.log(np.linalg.det(HXHT))
-        return f, g
+
+        return -logdet, g
 
     def func_grad_slow(self, x, flag=2):
-        assert x.size == self.n, "DOptimalObj: x.size not equal to n"
-        assert x.min() >= 0,     "DOptimalObj: x needs to be nonnegative"
-        sx = np.sqrt(x)
-        Hsx = self.H*sx;    # using numpy array broadcast
-        HXHT = np.dot(Hsx,Hsx.T)
-        
-        if flag == 0:       # only return function value
-            f = -np.log(np.linalg.det(HXHT))
-            return f
-        
-        Hsx = np.linalg.solve(HXHT, self.H)
-        g = np.empty(self.n)
-        for i in range(self.n):
-            g[i] = - np.dot(self.H[:,i], Hsx[:,i])
-            
-        if flag == 1:       # only return gradient
-            return g
-        
-        # return both function value and gradient
-        f = -np.log(np.linalg.det(HXHT))
-        return f, g
+        # Kept for reference.  It now delegates to the stable implementation.
+        return self.func_grad(x, flag=flag)
 
 
 class PoissonRegression(RSmoothFunction):
@@ -99,23 +110,23 @@ class PoissonRegression(RSmoothFunction):
         return self.func_grad(x, flag=1)
     
     def func_grad(self, x, flag=2):
-        assert x.size == self.n, "PoissonRegression: x.size not equal to n."
-        Ax = np.dot(self.A, x)
-        if flag == 0:
-            fx = sum( self.b * np.log(self.b / Ax) + Ax - self.b )
-            return fx
+        x = _as_float_array(x)
+        if x.size != self.n:
+            raise ValueError("PoissonRegression: x.size not equal to n.")
+        Ax = self.A @ x
+        if np.any(Ax <= 0) or not np.all(np.isfinite(Ax)):
+            raise ValueError("PoissonRegression: Ax must be finite and strictly positive.")
 
-        # use array broadcasting
-        g = ((1-self.b/Ax).reshape(self.m, 1) * self.A).sum(axis=0)
-        # line above is the same as the following code
-        #g = np.zeros(x.shape)
-        #for i in range(self.m):
-        #    g += (1 - self.b[i]/np.dot(self.A[i,:], x)) * self.A[i,:]
+        # D_KL(b, Ax) = sum_i b_i log(b_i/Ax_i) + Ax_i - b_i,
+        # with 0 log 0 convention handled by _xlogx_over_y.
+        if flag == 0:
+            return float(np.sum(_xlogx_over_y(self.b, Ax) + Ax - self.b))
+
+        g = self.A.T @ (1.0 - self.b / Ax)
         if flag == 1:
             return g
-        
-        # return both function value and gradient
-        fx = sum( self.b * np.log(self.b / Ax) + Ax - self.b )
+
+        fx = float(np.sum(_xlogx_over_y(self.b, Ax) + Ax - self.b))
         return fx, g
 
 
@@ -137,24 +148,25 @@ class KLdivRegression(RSmoothFunction):
         return self.func_grad(x, flag=1)
     
     def func_grad(self, x, flag=2):
-        assert x.size == self.n, "NonnegRegression: x.size not equal to n."
-        Ax = np.dot(self.A, x)
-        if flag == 0:
-            fx = sum( Ax * np.log(Ax / self.b) - Ax + self.b )
-            return fx
+        x = _as_float_array(x)
+        if x.size != self.n:
+            raise ValueError("KLdivRegression: x.size not equal to n.")
+        Ax = self.A @ x
+        if np.any(Ax <= 0) or not np.all(np.isfinite(Ax)):
+            raise ValueError("KLdivRegression: Ax must be finite and strictly positive for gradient evaluation.")
+        if np.any(self.b <= 0):
+            raise ValueError("KLdivRegression: b must be strictly positive.")
 
-        # use array broadcasting
-        g = (np.log(Ax/self.b).reshape(self.m, 1) * self.A).sum(axis=0)
-        # line above is the same as the following code
-        #g = np.zeros(x.shape)
-        #for i in range(self.m):
-        #    g += np.log(Ax[i]/self.b[i]) * self.A[i,:]
+        if flag == 0:
+            return float(np.sum(Ax * (np.log(Ax) - np.log(self.b)) - Ax + self.b))
+
+        g = self.A.T @ (np.log(Ax) - np.log(self.b))
         if flag == 1:
             return g
-        
-        # return both function value and gradient
-        fx = sum( Ax * np.log(Ax / self.b) - Ax + self.b )
+
+        fx = float(np.sum(Ax * (np.log(Ax) - np.log(self.b)) - Ax + self.b))
         return fx, g
+
            
            
 #######################################################################
@@ -204,35 +216,43 @@ class BurgEntropy(LegendreFunction):
     h(x) = - sum_{i=1}^n log(x[i]) for x > 0
     """
     def __call__(self, x):
-        assert x.min()>0, "BurgEntropy only takes positive arguments."
-        return -sum(np.log(x))
+        x = _require_finite_positive(x, "BurgEntropy: x")
+        return float(-np.sum(np.log(x)))
     
     def gradient(self, x):
-        assert x.min()>0, "BurgEntropy only takes positive arguments."
-        return -1/x
+        x = _require_finite_positive(x, "BurgEntropy: x")
+        return -1.0 / x
     
     def divergence(self, x, y):
-        assert x.shape == y.shape, "Vectors x and y are of different sizes."
-        assert x.min() > 0 and y.min() > 0, "Entries of x or y not positive."
-        return sum(x/y - np.log(x/y) - 1)        
+        x = _require_finite_positive(x, "BurgEntropy: x")
+        y = _require_finite_positive(y, "BurgEntropy: y")
+        if x.shape != y.shape:
+            raise ValueError("BurgEntropy: x and y have different shapes.")
+        r = x / y - 1.0
+        # r - log(1+r) is accurate near r=0.
+        return float(np.sum(r - np.log1p(r)))        
 
     def prox_map(self, g, L):
         """
         Return argmin_{x > 0} { <g, x> + L * h(x) } 
         This function needs to be replaced with inheritance
         """
-        assert L > 0, "BurgEntropy prox_map only takes positive L value."
-        assert g.min() > 0, "BurgEntropy prox_map only takes positive value."
-        return L / g
+        if L <= 0:
+            raise ValueError("BurgEntropy prox_map only takes positive L value.")
+        g = _require_finite_positive(g, "BurgEntropy prox_map: g")
+        return float(L) / g
            
     def div_prox_map(self, y, g, L):
         """
         Return argmin_{x > C} { <g, x> + L * D(x,y) }
         This is a general function that works for all derived classes
         """
-        assert y.shape == g.shape, "Vectors y and g are of different sizes." 
-        assert y.min() > 0 and L > 0, "Either y or L is not positive."
-        return self.prox_map(g - L*self.gradient(y), L)
+        if y.shape != g.shape:
+            raise ValueError("BurgEntropy: y and g have different shapes.") 
+        if L <= 0:
+            raise ValueError("BurgEntropy: L must be positive.")
+        _require_finite_positive(y, "BurgEntropy: y")
+        return self.prox_map(g - L * self.gradient(y), L)
 
 
 class BurgEntropyL1(BurgEntropy):
@@ -256,10 +276,15 @@ class BurgEntropyL1(BurgEntropy):
         Return argmin_{x > 0} { lambda * ||x||_1 + <g, x> + L h(x) }
         !!! This proximal mapping may have unbounded solution x->infty
         """
-        assert L > 0, "BurgEntropyL1: prox_map only takes positive L."
-        assert g.min() > -self.lamda, "Not getting positive solution."
-        #g = np.maximum(g, -self.lamda + 1.0 / self.x_max)
-        return L / (self.lamda + g)
+        if L <= 0:
+            raise ValueError("BurgEntropyL1: prox_map only takes positive L.")
+        g = _as_float_array(g)
+        denom = self.lamda + g
+        lower = 1.0 / float(self.x_max)
+        if np.any(denom <= 0):
+            # Avoid unbounded/invalid iterates instead of returning negative values.
+            denom = np.maximum(denom, lower)
+        return float(L) / denom
 
        
 class BurgEntropyL2(BurgEntropy):
@@ -281,10 +306,14 @@ class BurgEntropyL2(BurgEntropy):
         """
         Return argmin_{x > 0} { (lamda/2) * ||x||_2^2 + <g, x> + L * h(x) }
         """
-        assert L > 0, "BurgEntropyL2: prox_map only takes positive L value."
-        gg = g / L
-        lamda_L = self.lamda / L
-        return (np.sqrt(gg*gg + 4*lamda_L) - gg) / (2 * lamda_L)
+        if L <= 0:
+            raise ValueError("BurgEntropyL2: prox_map only takes positive L value.")
+        g = _as_float_array(g)
+        if self.lamda == 0:
+            return BurgEntropy.prox_map(self, g, L)
+        # Solve lamda*x^2 + g*x - L = 0 using a cancellation-safe formula.
+        disc = np.sqrt(g * g + 4.0 * self.lamda * L)
+        return (2.0 * L) / (disc + g)
 
        
 class BurgEntropySimplex(BurgEntropy):
@@ -311,39 +340,36 @@ class BurgEntropySimplex(BurgEntropy):
         """
         assert L > 0, "BurgEntropySimplex prox_map only takes positive L."
 
-        gg = np.asarray(g, dtype=float) / float(L)
+        gg = _as_float_array(g) / float(L)
+        if not np.all(np.isfinite(gg)):
+            raise ValueError("BurgEntropySimplex prox_map: non-finite g/L.")
 
-        # Domain: c > -min(gg)
-        c_lo = -np.min(gg)
-        c_lo = np.nextafter(c_lo, np.inf)
+        # Domain: c > -min(gg).
+        c_lo = np.nextafter(-np.min(gg), np.inf)
 
-        def f(c):
+        def root_fun(c):
             return np.sum(1.0 / (gg + c)) - 1.0
 
-        # Find c_hi such that f(c_hi) <= 0
         c_hi = max(c_lo + 1.0, 1.0)
-        while f(c_hi) > 0.0:
+        while root_fun(c_hi) > 0.0:
             c_hi *= 2.0
 
-        # Bisection on the unique root of f(c)=0
         for _ in range(self.max_iters):
             c = 0.5 * (c_lo + c_hi)
-            fc = f(c)
-
+            fc = root_fun(c)
             if abs(fc) <= self.eps:
                 break
-
             if fc > 0.0:
                 c_lo = c
             else:
                 c_hi = c
-
             if c_hi - c_lo <= self.eps * max(1.0, abs(c_hi), abs(c_lo)):
                 break
 
         c = 0.5 * (c_lo + c_hi)
         x = 1.0 / (gg + c)
-        return x
+        # Normalize to remove residual bisection error.
+        return x / np.sum(x)
        
 
 class ShannonEntropy(LegendreFunction):
@@ -354,39 +380,39 @@ class ShannonEntropy(LegendreFunction):
         self.delta = delta
         
     def __call__(self, x):
-        assert x.min() >= 0, "ShannonEntropy takes nonnegative arguments."
-        xx = np.maximum(x, self.delta)
-        return sum( xx * np.log(xx) )
+        x = _require_finite_positive(x, "ShannonEntropy: x", strict=False)
+        return float(np.sum(_xlogx_over_y(x, np.ones_like(x))))
 
     def gradient(self, x):         
-        assert x.min() >= 0, "ShannonEntropy takes nonnegative arguments."
+        x = _require_finite_positive(x, "ShannonEntropy: x", strict=False)
         xx = np.maximum(x, self.delta)
         return 1.0 + np.log(xx)
 
     def divergence(self, x, y):
-        assert x.shape == y.shape, "Vectors x and y are of different shapes."
-        assert x.min() >= 0 and y.min() >= 0, "Some entries are negative."
-        #for i in range(x.size):
-        #    if x[i] > 0 and y[i] == 0:
-        #        return np.inf 
-        return sum(x*np.log((x+self.delta)/(y+self.delta))) + (sum(y)-sum(x))        
+        x = _require_finite_positive(x, "ShannonEntropy: x", strict=False)
+        y = _require_finite_positive(y, "ShannonEntropy: y", strict=True)
+        if x.shape != y.shape:
+            raise ValueError("ShannonEntropy: x and y have different shapes.")
+        return float(np.sum(_xlogx_over_y(x, y) + y - x))        
         
     def prox_map(self, g, L):
         """
         Return argmin_{x >= 0} { <g, x> + L * h(x) }
         """
-        assert L > 0, "ShannonEntropy prox_map require L > 0."
-        return np.exp(-g/L - 1)
+        if L <= 0:
+            raise ValueError("ShannonEntropy prox_map require L > 0.")
+        return np.exp(-_as_float_array(g) / float(L) - 1.0)
 
     def div_prox_map(self, y, g, L):
         """
         Return argmin_{x >= 0} { <g, x> + L * D(x,y) }
         """
-        assert y.shape == g.shape, "Vectors y and g are of different sizes." 
-        assert y.min() >= 0 and L > 0, "Some entries of y are negavie."
-        #gg = g/L - self.gradient(y)
-        #return self.prox_map(gg, 1)
-        return y * np.exp(-g/L)
+        if y.shape != g.shape:
+            raise ValueError("ShannonEntropy: y and g have different shapes.") 
+        if L <= 0:
+            raise ValueError("ShannonEntropy: L must be positive.")
+        _require_finite_positive(y, "ShannonEntropy: y", strict=False)
+        return y * np.exp(-_as_float_array(g) / float(L))
    
 
 class ShannonEntropyL1(ShannonEntropy):
@@ -427,18 +453,26 @@ class ShannonEntropySimplex(ShannonEntropy):
         """
         Return argmin_{x in C} { <g, x> + L * h(x) } where C is unit simplex
         """
-        assert L > 0, "ShannonEntropy prox_map require L > 0."
-        x = np.exp(-g/L - 1)
-        return x / sum(x)
+        if L <= 0:
+            raise ValueError("ShannonEntropy prox_map require L > 0.")
+        a = -_as_float_array(g) / float(L)
+        a -= np.max(a)
+        x = np.exp(a)
+        return x / np.sum(x)
 
     def div_prox_map(self, y, g, L):
         """
         Return argmin_{x in C} { <g, x> + L*d(x,y) } where C is unit simplex
         """
-        assert y.shape == g.shape, "Vectors y and g are of different shapes."
-        assert y.min() > 0 and L > 0, "prox_map needs positive arguments."
-        x = y * np.exp(-g/L)
-        return x / sum(x)
+        if y.shape != g.shape:
+            raise ValueError("ShannonEntropySimplex: y and g have different shapes.")
+        if L <= 0:
+            raise ValueError("ShannonEntropySimplex: L must be positive.")
+        y = _require_finite_positive(y, "ShannonEntropySimplex: y")
+        a = np.log(y) - _as_float_array(g) / float(L)
+        a -= np.max(a)
+        x = np.exp(a)
+        return x / np.sum(x)
    
 
 class SumOf2nd4thPowers(LegendreFunction):
@@ -466,7 +500,7 @@ class SquaredL2Norm(LegendreFunction):
     h(x) = (1/2)||x||_2^2
     """       
     def __call__(self, x):
-        return 0.5*np.dot(x, x)
+        return float(0.5*np.dot(x, x))
 
     def gradient(self, x):         
         return x
@@ -474,7 +508,7 @@ class SquaredL2Norm(LegendreFunction):
     def divergence(self, x, y):
         assert x.shape == y.shape, "SquaredL2Norm: x and y not same shape."
         xy = x - y
-        return 0.5*np.dot(xy, xy)
+        return float(0.5*np.dot(xy, xy))
 
     def prox_map(self, g, L):
         assert L > 0, "SquaredL2Norm: L should be positive."
@@ -490,19 +524,26 @@ class PowerNeg1(LegendreFunction):
     h(x) = 1/x  for x>0
     """       
     def __call__(self, x):
-        return 1/x
+        x = _require_finite_positive(x, "PowerNeg1: x")
+        return float(np.sum(1.0 / x))
 
     def gradient(self, x):         
-        return -1/(x*x)
+        x = _require_finite_positive(x, "PowerNeg1: x")
+        return -1.0 / (x * x)
 
     def divergence(self, x, y):
-        assert x.shape == y.shape, "SquaredL2Norm: x and y not same shape."
+        x = _require_finite_positive(x, "PowerNeg1: x")
+        y = _require_finite_positive(y, "PowerNeg1: y")
+        if x.shape != y.shape:
+            raise ValueError("PowerNeg1: x and y not same shape.")
         xy = x - y
-        return np.sum(xy*xy/(x*y*y))
+        return float(np.sum(xy * xy / (x * y * y)))
 
     def prox_map(self, g, L):
-        assert L > 0, "SquaredL2Norm: L should be positive."
-        return np.sqrt(L/g)
+        if L <= 0:
+            raise ValueError("PowerNeg1: L should be positive.")
+        g = _require_finite_positive(g, "PowerNeg1 prox_map: g")
+        return np.sqrt(float(L) / g)
         
 
 class L2L1Linf(LegendreFunction):
@@ -545,10 +586,10 @@ class L2L1Linf(LegendreFunction):
         Return argmin_{x in C} { Psi(x) + <g, x> + L * h(x) }
         """
         assert L > 0, "L2L1Linf: L should be positive."
-        x = -(1.0/L) * g
+        x = -(1.0 / L) * np.array(g, dtype=float, copy=True)
         threshold = self.lamda / L
-        x[abs(x) <= threshold] = 0
-        x[x >  threshold] -= threshold
+        x[np.abs(x) <= threshold] = 0.0
+        x[x > threshold] -= threshold
         x[x < -threshold] += threshold
         np.clip(x, -self.B, self.B, out=x)
         return x

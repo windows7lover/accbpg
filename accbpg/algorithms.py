@@ -5,36 +5,41 @@ import math
 import numpy as np
 import time
 import warnings
+from dataclasses import dataclass
 
 
-def positive_tk(alpha_k, mu, L, c):
-    """
-    Positive root of
-        (1 - t) * alpha_k + t * mu >= L * c * t^2.
 
-    Uses a numerically stable formula for the positive root of
-        L c t^2 + (alpha_k - mu) t - alpha_k = 0,
-    avoiding cancellation when c is large and the root is very small.
-    """
-    
-    if L <= 0:
-        raise ValueError("L must be positive.")
-    if c <= 0:
-        raise ValueError("c must be positive.")
-    if alpha_k < mu:
-        raise ValueError("alpha_k must satisfy alpha_k >= mu.")
+def positive_tk_eta(eta_k, mu, M):
+    """Positive root in eta-form; returns t=1 for the limiting eta_k=0 initialization."""
+    if M <= 0:
+        raise ValueError("M must be positive.")
+    if mu < 0:
+        raise ValueError("mu must be nonnegative.")
+    if eta_k == 0:
+        return 1.0
+    if eta_k < 0:
+        raise ValueError("eta_k must be nonnegative.")
 
-    if alpha_k == 0.0 and mu == 0.0:
-        return 0.0
+    a = 1.0 + mu * eta_k
+    disc = 1.0 + 4.0 * M * eta_k * a
+    t = 2.0 * a / (1.0 + math.sqrt(disc))
+    return min(1.0, max(0.0, t))
 
-    # return min(0.99, 1/(c))
-    
-    # Lc = L * c
-    Lc = c
-    delta = alpha_k - mu
-    sqrt_disc = math.hypot(delta, 2.0 * math.sqrt(Lc) * math.sqrt(alpha_k))
-    t_pos = (2.0 * alpha_k) / (delta + sqrt_disc)
-    return min(0.99, max(0.0, t_pos))
+
+def compute_tau(t_k, mu, current_M, current_L):
+    """Return tau = (t - mu / sqrt(M L)) / (1 - mu / sqrt(M L))."""
+    if mu == 0.0:
+        return t_k
+    if current_M <= 0.0:
+        raise ValueError("current_M must be positive.")
+    if current_L <= 0.0:
+        raise ValueError("current_L must be positive.")
+    scale = math.sqrt(current_M * current_L)
+    delta = mu / scale
+    denom = 1.0 - delta
+    if denom <= 0.0:
+        raise ValueError("Invalid tau: need sqrt(current_M * current_L) > mu.")
+    return (t_k - delta) / denom
 
 
 def backtracking_gradient(y, fy, gy, current_L, f_eval, div_prox_map, divergence,
@@ -80,373 +85,342 @@ def backtracking_gradient(y, fy, gy, current_L, f_eval, div_prox_map, divergence
     return best_xplus, best_fplus, current_L
 
 
-def acc_init_state(x_start, mu, current_L, current_c, f_eval, grad_h, extra_Psi):
-    """
-    Initialize/reset one ABRA_GD phase.
 
-    The current point x_start becomes the new anchor point for the phase.
-    The returned state is a sentinel state with eta_k = 0, meaning the next
-    loop iteration must execute acc_first_step from this new anchor.
-    """
+@dataclass
+class AbraOracles:
+    func_grad: object
+    f_eval: object
+    grad_h: object
+    extra_Psi: object
+    div_prox_map: object
+    divergence: object
+
+    @classmethod
+    def from_problem(cls, f, h):
+        return cls(
+            func_grad=f.func_grad,
+            f_eval=f if callable(f) else (lambda x: f.func_grad(x)[0]),
+            grad_h=h.gradient,
+            extra_Psi=h.extra_Psi,
+            div_prox_map=h.div_prox_map,
+            divergence=h.divergence,
+        )
+
+
+@dataclass
+class AbraState:
+    x: np.ndarray
+    z: np.ndarray
+    lambdak: np.ndarray
+    eta: float
+    phi: float
+    psi_z: float
+    x_anchor: np.ndarray
+    dx_anchor: np.ndarray
+    L_cur: float
+    M_cur: float
+
+
+@dataclass
+class AbraStepResult:
+    y: np.ndarray
+    gy: np.ndarray
+    dy: np.ndarray
+    xplus: np.ndarray
+    zplus: np.ndarray
+    lambda_plus: np.ndarray
+    philow: float
+    phi_plus: float
+    dzz: float
+    L_cur: float
+
+
+@dataclass
+class AbraHistories:
+    F: np.ndarray
+    tk: np.ndarray
+    tau: np.ndarray
+    eta: np.ndarray
+    M: np.ndarray
+    alpha: np.ndarray
+    L: np.ndarray
+    rho_eff: np.ndarray
+    T: np.ndarray
+
+    @classmethod
+    def allocate(cls, maxitrs):
+        return cls(
+            F=np.zeros(maxitrs),
+            tk=np.zeros(maxitrs),
+            tau=np.full(maxitrs, np.nan),
+            eta=np.full(maxitrs, np.nan),
+            M=np.full(maxitrs, np.nan),
+            alpha=np.full(maxitrs, np.nan),
+            L=np.full(maxitrs, np.nan),
+            rho_eff=np.full(maxitrs, np.nan),
+            T=np.zeros(maxitrs),
+        )
+
+    def record(self, k, state, t_k, tau_k, mu, elapsed):
+        self.F[k] = state.phi
+        self.tk[k] = t_k
+        self.tau[k] = tau_k
+        self.eta[k] = state.eta
+        self.M[k] = state.M_cur
+        self.alpha[k] = mu if state.eta == 0 else mu + 1.0 / state.eta
+        self.L[k] = state.L_cur
+        if state.L_cur > 0:
+            self.rho_eff[k] = math.sqrt(state.M_cur / state.L_cur) if mu == 0 else (state.M_cur / state.L_cur) ** 0.25
+        self.T[k] = elapsed
+
+    def result(self, n):
+        return (
+            self.F[:n],
+            self.tk[:n],
+            self.eta[:n],
+            self.M[:n],
+            self.alpha[:n],
+            self.L[:n],
+            self.T[:n],
+        )
+
+    def diagnostics(self, n):
+        return {
+            "tau": self.tau[:n],
+            "rho_eff": self.rho_eff[:n],
+            "M": self.M[:n],
+            "alpha": self.alpha[:n],
+            "L": self.L[:n],
+        }
+
+
+def acc_init_state(x_start, mu, current_L, current_M, oracles):
+    """Initialize/reset one ABRA_GD phase from a fresh anchor."""
     x_anchor = np.copy(x_start)
-    dx_anchor = grad_h(x_anchor)
+    dx_anchor = oracles.grad_h(x_anchor)
+    phi_x = oracles.f_eval(x_anchor) + oracles.extra_Psi(x_anchor)
 
-    x = np.copy(x_anchor)
-    z = np.copy(x_anchor)
-    lambdak = np.zeros_like(x_anchor)
-    alpha_k = mu
-    eta_k = 0
-    phi_x = f_eval(x)
-    phi_x += extra_Psi(x)
-    psi_z = extra_Psi(z)
-
-    return (
-        x,
-        z,
-        lambdak,
-        alpha_k,
-        eta_k,
-        phi_x,
-        psi_z,
-        x_anchor,
-        dx_anchor,
-        current_L,
-        current_c,
+    return AbraState(
+        x=np.copy(x_anchor),
+        z=np.copy(x_anchor),
+        lambdak=np.zeros_like(x_anchor),
+        eta=0,
+        phi=phi_x,
+        psi_z=oracles.extra_Psi(x_anchor),
+        x_anchor=x_anchor,
+        dx_anchor=dx_anchor,
+        L_cur=current_L,
+        M_cur=current_M,
     )
 
 
-def acc_first_step(x_start, mu, x_anchor, dx_anchor, current_L, func_grad, f_eval, grad_h,
-                   extra_Psi, div_prox_map, divergence, max_backtracks=50):
+def BregPDStep(state, eta_plus_inv, t_k, tau_k, mu, oracles,
+               max_backtracks=50, local_z=False):
     """
-    Safe first accelerated step for a fresh ABRA_GD phase.
-
-    The current phase is anchored at x_anchor. Starting from x_start, this
-    routine performs one prox-gradient step with backtracking and initializes
-    the accelerated state with z = x.
-    """
-    fx_start, gx_start = func_grad(x_start)
-    dx_start = grad_h(x_start)
-
-    x, f_x, current_L = backtracking_gradient(
-        x_start, fx_start, gx_start, current_L, f_eval, div_prox_map, divergence,
-        max_backtracks=max_backtracks,
-    )
-    z = np.copy(x)
-    lambdak = gx_start - mu * (dx_start - dx_anchor)
-    alpha_k = current_L
-
-    phi_x = f_x + extra_Psi(x)
-    psi_z = phi_x - f_x
-    dzz = divergence(z, x_start)
-
-    return x, z, lambdak, alpha_k, phi_x, psi_z, dzz, current_L
-
-
-def fallback_gd_step(x, current_L, func_grad, f_eval, extra_Psi,
-                     div_prox_map, divergence, max_backtracks=50):
-    """
-    Fallback non-accelerated prox-gradient step from the current primal point.
-
-    This is used when the acceleration parameter c becomes too large. The
-    primal point is updated by one backtracked GD/BPG step, while the dual
-    accelerated state (z, lambda, alpha, eta) is left unchanged.
-    """
-    fx, gx = func_grad(x)
-    xplus, fplus, current_L = backtracking_gradient(
-        x, fx, gx, current_L, f_eval, div_prox_map, divergence,
-        max_backtracks=max_backtracks,
-    )
-    phi_plus = fplus + extra_Psi(xplus)
-    return xplus, phi_plus, current_L
-
-def BregPDStep(x, z, lambdak, alpha_k, t_k, mu, x_anchor, dx_anchor, current_L, psi_z,
-               func_grad, f_eval, grad_h, extra_Psi, div_prox_map, divergence,
-               local_z=False):
-    """
-    One generic primal-dual Bregman step for k >= 1.
+    One generic primal-dual Bregman step.
 
     If local_z is False, use the original anchor-based prox:
-        z_{k+1} = argmin_x <lambda_{k+1}, x> + alpha_{k+1} D_h(x, x_anchor) + Psi(x)
+        z_{k+1} = argmin_x <lambda_{k+1}, x>
+                  + (mu + eta_{k+1}^{-1}) D_h(x, x_anchor) + Psi(x).
 
-    If local_z is True, use the equivalent local form centered at z_k:
-        z_{k+1} = argmin_x < t_k (gy - mu (dy - dz)), x > + alpha_{k+1} D_h(x, z_k) + Psi(x)
-
-    Returns alpha_plus and dzz directly so ABRA_GD does not recompute them.
+    If local_z is True, use the local form centered at z_k.
+    This branch is appropriate only when the local prox formula is valid for the chosen h/Psi.
     """
-    omt = 1.0 - t_k
+    y = state.x + tau_k * (state.z - state.x)
+    fy, gy = oracles.func_grad(y)
+    dy = oracles.grad_h(y)
 
-    y = x + t_k * (z - x)
-    fy, gy = func_grad(y)
-    dy = grad_h(y)
+    if eta_plus_inv <= 0.0:
+        raise ValueError("eta_plus_inv <= 0 in BregPDStep. Increase current_M.")
+    curvature_new = mu + eta_plus_inv
 
-    alpha_plus = omt * alpha_k + t_k * mu
-    if alpha_plus <= 0:
-        raise ValueError(
-            "alpha_plus <= 0 in BregPDStep. "
-            "The first step must be handled explicitly."
-        )
+    dual_target = gy - mu * (dy - state.dx_anchor)
+    lambda_plus = state.lambdak + t_k * (dual_target - state.lambdak)
 
-    # More accurate than omt * lambdak + t_k * dual_target when t_k is small.
-    dual_target = gy - mu * (dy - dx_anchor)
-    lambda_plus = lambdak + t_k * (dual_target - lambdak)
-
-    '''
     if local_z:
-        dz = grad_h(z)
+        dz = oracles.grad_h(state.z)
         local_linear = t_k * (gy - mu * (dy - dz))
-        zplus = div_prox_map(z, local_linear, alpha_plus)
+        zplus = oracles.div_prox_map(state.z, local_linear, curvature_new)
     else:
-        zplus = div_prox_map(x_anchor, lambda_plus, alpha_plus)
-    '''
-    
-    if local_z:
-        dz = grad_h(z)
+        zplus = oracles.div_prox_map(state.x_anchor, lambda_plus, curvature_new)
 
-        theta = t_k * mu / alpha_plus
+    dzz = oracles.divergence(zplus, state.z)
 
-        # zbar satisfies:
-        # ∇d(zbar) = (1 - theta) ∇d(z_k) + theta ∇d(y_k)
-        zbar = div_prox_map(
-            z,
-            -theta * (dy - dz),
-            1.0,
-        )
-
-        # z_{k+1} = argmin_x t_k <∇φ(y_k), x> + α_{k+1} D_d(x, zbar)
-        zplus = div_prox_map(
-            zbar,
-            t_k * gy,
-            alpha_plus,
-        )
-    else:
-        zplus = div_prox_map(x_anchor, lambda_plus, alpha_plus)
-    
-    dzz = divergence(zplus, z)
-
-    xplus, fplus, current_L = backtracking_gradient(
-        y, fy, gy, current_L, f_eval, div_prox_map, divergence
+    xplus, fplus, L_cur = backtracking_gradient(
+        y, fy, gy, state.L_cur / 2.0, oracles.f_eval,
+        oracles.div_prox_map, oracles.divergence,
+        max_backtracks=max_backtracks,
     )
 
-    # High precision accumulation
-    aff = np.sum((gy * (z - y)).astype(np.longdouble), dtype=np.longdouble)
-    dzy = np.longdouble(divergence(z, y))
-    philowk = float(
+    aff = np.sum((gy * (state.z - y)).astype(np.longdouble), dtype=np.longdouble)
+    dzy = np.longdouble(oracles.divergence(state.z, y))
+    philow = float(
         np.longdouble(fy)
         + aff
         + np.longdouble(mu) * dzy
-        + np.longdouble(psi_z)
+        + np.longdouble(state.psi_z)
     )
 
-    psi_xplus = extra_Psi(xplus)
-    phi_plus = fplus + psi_xplus
+    phi_plus = fplus + oracles.extra_Psi(xplus)
 
-    return y, gy, dy, xplus, zplus, lambda_plus, philowk, phi_plus, alpha_plus, dzz, current_L
+    return AbraStepResult(
+        y=y,
+        gy=gy,
+        dy=dy,
+        xplus=xplus,
+        zplus=zplus,
+        lambda_plus=lambda_plus,
+        philow=philow,
+        phi_plus=phi_plus,
+        dzz=dzz,
+        L_cur=L_cur,
+    )
 
-def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
-            max_backtracks=50, c_min=1.0, c_max=1.0e12, restart=False, restart_rule='g'):
-    """
-    Adaptive Bregman Accelerated Gradient Descent.
 
-    Optimizations:
-    - carries phi_x instead of recomputing f(x)+Psi(x) every iteration;
-    - caches psi_z = Psi(z_k) across the inner loop;
-    - uses f(xplus) rather than func_grad(xplus) in backtracking;
-    - tracks alpha_k directly, eta_k explicitly, and now stores L_k history.
-    """
+def _validate_abra_inputs(L, maxitrs, mu, restart_rule):
     if L <= 0:
         raise ValueError("L must be positive.")
     if mu < 0:
         raise ValueError("mu must be nonnegative.")
     if maxitrs <= 0:
         raise ValueError("maxitrs must be positive.")
-    if c_min <= 0:
-        raise ValueError("c_min must be positive.")
-    if c_max <= 0:
-        raise ValueError("c_max must be positive.")
-    if c_max < c_min:
-        raise ValueError("c_max must satisfy c_max >= c_min.")
     if restart_rule not in ('g', 'f'):
         raise ValueError("restart_rule must be either 'g' or 'f'.")
 
-    func_grad = f.func_grad
-    f_eval = f if callable(f) else (lambda x: f.func_grad(x)[0])
-    grad_h = h.gradient
-    extra_Psi = h.extra_Psi
-    div_prox_map = h.div_prox_map
-    divergence = h.divergence
+
+def _restart_state(state, mu, oracles):
+    return acc_init_state(
+        state.x,
+        mu,
+        state.L_cur,
+        state.M_cur,
+        oracles,
+    )
+
+
+def _accept_step(state, step, eta_plus_inv, phi_plus, xplus, oracles):
+    state.x = xplus
+    state.phi = phi_plus
+    state.z = step.zplus
+    state.lambdak = step.lambda_plus
+    state.eta = 1.0 / eta_plus_inv
+    state.psi_z = oracles.extra_Psi(state.z)
+    state.L_cur = step.L_cur
+
+
+def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
+            max_backtracks=50, restart=False, restart_rule='g',
+            return_diagnostics=False):
+    """
+    Adaptive Bregman Accelerated Gradient Descent.
+
+    The ABRA state, oracle bundle, and histories are stored in small containers to
+    keep the main loop readable. The numerical update is unchanged from the prior version.
+    """
+    _validate_abra_inputs(L, maxitrs, mu, restart_rule)
+
+    oracles = AbraOracles.from_problem(f, h)
 
     if verbose:
         print("\nABRA_GD method for min_{x in C} F(x) = f(x) + Psi(x)")
-        print("     k      F(x)       eta_k        t_k         L_k         c_k      time")
+        print("     k      F(x)       eta_k        t_k         L_k         M_k      time")
 
     start_time = time.time()
+    hist = AbraHistories.allocate(maxitrs)
 
-    F = np.zeros(maxitrs)
-    tk_hist = np.zeros(maxitrs)
-    eta_hist = np.full(maxitrs, np.nan)
-    ck_hist = np.full(maxitrs, np.nan)
-    alpha_hist = np.full(maxitrs, np.nan)
-    L_hist = np.full(maxitrs, np.nan)
-    T = np.zeros(maxitrs)
+    state = acc_init_state(
+        x0,
+        mu,
+        float(max(L, mu)),
+        1.0,
+        oracles,
+    )
 
-    current_L = float(max(L, mu))
-    current_c = max(1.0, c_min)
-
-    (
-        x,
-        z,
-        lambdak,
-        alpha_k,
-        eta_k,
-        phi_x,
-        psi_z,
-        x_anchor,
-        dx_anchor,
-        current_L,
-        current_c,
-    ) = acc_init_state(x0, mu, current_L, current_c, f_eval, grad_h, extra_Psi)
-
-    trigger_restart = False
-    trigger_fallback = False
     for k in range(maxitrs):
-        trigger_restart = False
-        trigger_fallback = False
-        x_prev = np.copy(x)
-        phi_prev = phi_x
+        x_prev = np.copy(state.x)
+        phi_prev = state.phi
 
-        if eta_k == 0:
-            x, z, lambdak, alpha_k, phi_x, psi_z, dzz, current_L = acc_first_step(
-                x,
-                mu,
-                x_anchor,
-                dx_anchor,
-                current_L,
-                func_grad,
-                f_eval,
-                grad_h,
-                extra_Psi,
-                div_prox_map,
-                divergence,
+        state.L_cur = max(0.5 * state.L_cur, mu)
+        state.M_cur = 0.5 * state.M_cur
+        t_k = 0.0
+        tau_k = np.nan
+
+        while True:
+            t_k = positive_tk_eta(state.eta, mu, state.M_cur)
+            try:
+                tau_k = compute_tau(t_k, mu, state.M_cur, state.L_cur)
+            except ValueError:
+                state.M_cur *= 2.0
+                continue
+
+            eta_plus_inv = state.M_cur * t_k * t_k - mu
+            if eta_plus_inv <= 0.0:
+                state.M_cur *= 2.0
+                continue
+
+            step = BregPDStep(
+                state,
+                eta_plus_inv=eta_plus_inv,
+                t_k=t_k,
+                tau_k=tau_k,
+                mu=mu,
+                oracles=oracles,
                 max_backtracks=max_backtracks,
             )
-            eta_k = 0 if alpha_k == mu else 1.0 / (alpha_k - mu)
-            t_k = 0.0
-            current_c = max(1.0, c_min)
-        else:
-            current_L = max(0.5 * current_L, mu)
-            # current_c = max(0.5 * current_c, 1.0)
-            current_c = 0.5 * current_c
+            state.L_cur = step.L_cur
 
-            while True:
-                # if current_c > c_max:
-                #     t_k = 0.0
-                # else:
-                t_k = positive_tk(alpha_k, mu, current_L, current_c)
+            if state.phi <= step.phi_plus:
+                xplus = state.x
+                phi_plus = state.phi
+            else:
+                xplus = step.xplus
+                phi_plus = step.phi_plus
 
-                y_cand, gy_cand, dy_cand, x_cand, zplus, lambda_plus, philowk, phi_cand, alpha_plus, dzz, current_L = BregPDStep(
-                    x=x,
-                    z=z,
-                    lambdak=lambdak,
-                    alpha_k=alpha_k,
-                    t_k=t_k,
-                    mu=mu,
-                    x_anchor=x_anchor,
-                    dx_anchor=dx_anchor,
-                    current_L=current_L,
-                    psi_z=psi_z,
-                    func_grad=func_grad,
-                    f_eval=f_eval,
-                    grad_h=grad_h,
-                    extra_Psi=extra_Psi,
-                    div_prox_map=div_prox_map,
-                    divergence=divergence,
-                )
+            certificate_rhs = (
+                (1.0 - t_k) * state.phi
+                + t_k * step.philow
+                - (mu + eta_plus_inv) * step.dzz
+            )
 
-                if phi_x <= phi_cand:
-                    xplus = x
-                    phi_plus = phi_x
-                else:
-                    xplus = x_cand
-                    phi_plus = phi_cand
-
-                if phi_plus <= (1.0 - t_k) * phi_x + t_k * philowk - alpha_plus * dzz:
-                    x = xplus
-                    phi_x = phi_plus
-
-                    restart_now = False
-
-                    if restart and k > 0:
-                        if restart_rule == 'f':
-                            restart_now = (phi_cand > phi_prev)
-                        else:
-                            restart_now = (np.dot(gy_cand, x_cand - x_prev) > 0.0)
-
-                    if restart_now:
-                        # print("Restarting Algorithm")
-                        trigger_restart = True
-                        (
-                            x,
-                            z,
-                            lambdak,
-                            alpha_k,
-                            eta_k,
-                            phi_x,
-                            psi_z,
-                            x_anchor,
-                            dx_anchor,
-                            current_L,
-                            current_c,
-                        ) = acc_init_state(x, mu, current_L, current_c, f_eval, grad_h, extra_Psi)
-                        t_k = 0.0
+            if phi_plus <= certificate_rhs:
+                restart_now = False
+                if restart and k > 0:
+                    if restart_rule == 'f':
+                        restart_now = step.phi_plus > phi_prev
                     else:
-                        z = zplus
-                        lambdak = lambda_plus
-                        alpha_k = alpha_plus
-                        eta_k = 0 if alpha_k == mu else 1.0 / (alpha_k - mu)
-                        psi_z = extra_Psi(z)
-                    break
+                        restart_now = np.dot(step.gy, step.xplus - x_prev) > 0.0
 
-                current_c *= 2.0
-        '''
-        if trigger_restart:
-            print("current_c: {5:10.3e}", current_c)
-            print("current_tk: {5:10.3e}", t_k)
-        if trigger_fallback:
-            print("Fallback to GD because c exceeded c_max")
-            print("current_c: {5:10.3e}", current_c)
-            print("current_tk: {5:10.3e}", t_k)
-        '''
-        
-        F[k] = phi_x
-        tk_hist[k] = t_k
-        eta_hist[k] = eta_k
-        ck_hist[k] = current_c
-        alpha_hist[k] = alpha_k
-        L_hist[k] = current_L
-        T[k] = time.time() - start_time
+                if restart_now:
+                    state.x = xplus
+                    state.phi = phi_plus
+                    state = _restart_state(state, mu, oracles)
+                    t_k = 0.0
+                    tau_k = np.nan
+                else:
+                    _accept_step(state, step, eta_plus_inv, phi_plus, xplus, oracles)
+                break
+
+            state.M_cur *= 2.0
+
+        hist.record(k, state, t_k, tau_k, mu, time.time() - start_time)
 
         if verbose and k % verbskip == 0:
             print(
                 "{0:6d}  {1:10.3e}  {2:10.3e}  {3:10.3e}  {4:10.3e}  {5:10.3e}  {6:6.1f}".format(
-                    k, F[k], eta_hist[k], tk_hist[k], L_hist[k], current_c, T[k]
+                    k, hist.F[k], hist.eta[k], hist.tk[k], hist.L[k], hist.M[k], hist.T[k]
                 )
             )
 
-        if (eta_k > 0) and (1.0 / eta_k) < epsilon:
+        if (state.eta > 0) and (1.0 / state.eta) < epsilon:
             break
 
-    return (
-        x,
-        F[:k + 1],
-        tk_hist[:k + 1],
-        eta_hist[:k + 1],
-        ck_hist[:k + 1],
-        alpha_hist[:k + 1],
-        L_hist[:k + 1],
-        T[:k + 1],
-    )
+    n = k + 1
+    result = (state.x,) + hist.result(n)
+    if return_diagnostics:
+        return result + (hist.diagnostics(n),)
+    return result
 
-def BPG(f, h, L, x0, maxitrs, epsilon=1e-14, linesearch=True, ls_ratio=1.2,
+def BPG(f, h, L, x0, maxitrs, epsilon=0, linesearch=True, ls_ratio=1.2,
         verbose=True, verbskip=1):
     """
     Bregman Proximal Gradient (BGP) method for min_{x in C} f(x) + Psi(x): 

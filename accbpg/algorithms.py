@@ -271,7 +271,7 @@ def BregPDStep(state, eta_plus_inv, t_k, tau_k, mu, oracles,
         zplus = oracles.div_prox_map(state.z, local_linear, curvature_new)
     else:
         zplus = oracles.div_prox_map(state.x_anchor, lambda_plus, curvature_new)
-
+		
     dzz = oracles.divergence(zplus, state.z)
 
     xplus, fplus, L_cur = backtracking_gradient(
@@ -338,7 +338,7 @@ def _accept_step(state, step, eta_plus_inv, phi_plus, xplus, oracles):
 
 def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
             max_backtracks=50, restart=False, restart_rule='g',
-            return_diagnostics=False):
+            return_diagnostics=False, Mmin=0.0):
     """
     Adaptive Bregman Accelerated Gradient Descent.
 
@@ -349,6 +349,9 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
 
     f = CountedFunction(f)
     oracles = AbraOracles.from_problem(f, h)
+    
+    if restart is False:
+        Mmin = 0.25
 
     if verbose:
         print("\nABRA_GD method for min_{x in C} F(x) = f(x) + Psi(x)")
@@ -370,7 +373,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
         phi_prev = state.phi
 
         state.L_cur = max(0.5 * state.L_cur, mu)
-        state.M_cur = 0.5 * state.M_cur
+        state.M_cur = max(0.5 * state.M_cur, Mmin)
         t_k = 0.0
         tau_k = np.nan
 
@@ -386,6 +389,9 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
             if eta_plus_inv <= 0.0:
                 state.M_cur *= 2.0
                 continue
+    
+            if np.isnan(state.M_cur) or np.isinf(state.M_cur):
+                break
 
             step = BregPDStep(
                 state,

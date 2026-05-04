@@ -1,0 +1,24 @@
+poisson: 
+mmin = 0 partout
+
+1st experiment: 
+xaxis ite = 8000, ncall = 32000
+yaxis 10^0, 10^-7
+
+2nd experiment
+xaxis ite = 1000 ncall = 4000
+yaxis 10^0, 10^-6
+
+
+dopt libsvm
+mmin = 0.25 normal 0 restart
+
+xaxis ite = 4000 ncall = 16000
+yaxis 10^0, 10^-4
+
+
+dopt libsvm str cvx no restart
+mmin = 0.25 normal 0 restart
+
+xaxis ite = 2500 ncall = 7500
+yaxis 10^1, 10^-8

@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 """
-Example: D-optimal experiment design with LIBSVM datasets.
+Example: relatively strongly convex D-optimal experiment design with a LIBSVM dataset.
 
-Adaptive comparison only:
-- left subplot: objective gap vs iteration
-- right subplot: objective gap vs oracle calls
+We convexify the smooth part by replacing
+    f(x) <- f0(x) + mu * h(x),
+where h is the Burg entropy / Legendre kernel used by the D-optimal design problem.
+
+If f0 is L0-smooth relative to h, then f = f0 + mu h is
+(L0 + mu)-smooth and mu-strongly convex relative to h.
+
+Kept methods:
+- BPG
+- BPG-LS
+- ABPG
+- ABPG-e
+- ABPG-g
+- ABRA-GD
+
+Removed:
+- restarted ABRA-GD variants
 """
 
 from __future__ import annotations
@@ -27,9 +41,42 @@ matplotlib.rcParams.update(
 # Forced comparison-plot axes
 # ---------------------------------------------------------------------
 
-ITER_XLIM = (0, 4000)
-ORACLE_XLIM = (0, 16000)
-GAP_YLIM = (1e-4, 1e0)
+ITER_XLIM = (0, 2500)
+ORACLE_XLIM = (0, 7500)
+GAP_YLIM = (1e-8, 1e1)
+
+
+class RelStrongConvexified:
+    """
+    Wrap f0 into f = f0 + mu * h.
+
+    This adds relative strong convexity mu w.r.t. h and increases the
+    relative smoothness constant from L0 to L0 + mu.
+    """
+
+    def __init__(self, f0, h, mu: float):
+        if mu < 0:
+            raise ValueError("mu must be nonnegative.")
+        self.f0 = f0
+        self.h = h
+        self.mu = float(mu)
+        self.n = getattr(f0, "n", None)
+        self.m = getattr(f0, "m", None)
+
+    def __call__(self, x):
+        return self.func_grad(x, flag=0)
+
+    def gradient(self, x):
+        return self.func_grad(x, flag=1)
+
+    def func_grad(self, x, flag=2):
+        if flag == 0:
+            return self.f0(x) + self.mu * self.h(x)
+        if flag == 1:
+            return self.f0.gradient(x) + self.mu * self.h.gradient(x)
+
+        f0x, g0x = self.f0.func_grad(x, flag=2)
+        return f0x + self.mu * self.h(x), g0x + self.mu * self.h.gradient(x)
 
 
 def _lim(lim):
@@ -80,7 +127,7 @@ def infer_metric_ylim(series_list, logscale=False):
 
 def plot_abra_diagnostics(results: dict, *, title: str | None = None):
     """
-    Diagnostic plot for ABRA-GD.
+    Diagnostic plot for non-restarted ABRA-GD only.
     """
 
     fig, axes = plt.subplots(3, 2, figsize=(11, 10.5))
@@ -96,7 +143,7 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
     xvals = [np.arange(len(results[k]["t"])) for k in keys]
 
     t_series = [results[k]["t"] for k in keys]
-    c_series = [results[k]["c"] for k in keys]
+    M_series = [results[k]["M"] for k in keys]
     alpha_series = [results[k]["alpha"] for k in keys]
     eta_series = [
         np.where(np.isfinite(results[k]["eta"]), results[k]["eta"], np.nan)
@@ -106,7 +153,7 @@ def plot_abra_diagnostics(results: dict, *, title: str | None = None):
 
     panels = [
         (axes[0, 0], t_series, r"$t_k$", "linear"),
-        (axes[0, 1], c_series, r"$c_k$", "log"),
+        (axes[0, 1], M_series, r"$M_k$", "log"),
         (axes[1, 0], alpha_series, r"$\alpha_k$", "log"),
         (axes[1, 1], eta_series, r"$\eta_k$", "log"),
         (axes[2, 0], L_series, r"$L_k$", "log"),
@@ -209,15 +256,34 @@ def make_comparison_figure(
     return fig
 
 
+def make_problem(filename: str, *, mu: float):
+    f0, h, L0, x0 = accbpg.D_opt_libsvm(filename)
+    f = RelStrongConvexified(f0, h, mu)
+    L = L0 + mu
+    return f, h, L, x0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run D-optimal design experiments on a LIBSVM dataset."
+        description="Run relatively strongly convex D-optimal design experiments on a LIBSVM dataset."
     )
     parser.add_argument(
         "--filename",
         type=str,
         default=r"data\housing.txt",
         help="LIBSVM dataset path.",
+    )
+    parser.add_argument(
+        "--mu",
+        type=float,
+        default=1e-4,
+        help="Relative strong convexity added as f <- f + mu * h.",
+    )
+    parser.add_argument(
+        "--maxitrs",
+        type=int,
+        default=4000,
+        help="Maximum number of iterations for each method.",
     )
     parser.add_argument(
         "--save-dir",
@@ -234,27 +300,28 @@ def main() -> None:
 
     filename = args.filename
     title_name = Path(filename).stem
+    mu = args.mu
+    maxitrs = args.maxitrs
 
-    f, h, L, x0 = accbpg.D_opt_libsvm(filename)
+    f, h, L, x0 = make_problem(filename, mu=mu)
 
-    xabra, Fabra, tk_abra, eta_abra, ck_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
+    xabra, Fabra, tk_abra, eta_abra, M_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
         f,
         h,
         L,
         x0,
-        maxitrs=10000,
-        mu=0.0,
+        maxitrs=maxitrs,
+        mu=mu,
         restart=False,
         verbskip=1000,
     )
-
 
     x00, F00, _, T00 = accbpg.BPG(
         f,
         h,
         L,
         x0,
-        maxitrs=10000,
+        maxitrs=maxitrs,
         linesearch=False,
         verbskip=1000,
     )
@@ -264,7 +331,7 @@ def main() -> None:
         h,
         L,
         x0,
-        maxitrs=10000,
+        maxitrs=maxitrs,
         linesearch=True,
         ls_ratio=1.2,
         verbskip=1000,
@@ -276,7 +343,7 @@ def main() -> None:
         L,
         x0,
         gamma=2.0,
-        maxitrs=10000,
+        maxitrs=maxitrs,
         theta_eq=True,
         verbskip=1000,
     )
@@ -287,7 +354,7 @@ def main() -> None:
         L,
         x0,
         gamma0=3,
-        maxitrs=10000,
+        maxitrs=maxitrs,
         theta_eq=True,
         Gmargin=100,
         verbskip=1000,
@@ -299,7 +366,7 @@ def main() -> None:
         L,
         x0,
         gamma=2,
-        maxitrs=10000,
+        maxitrs=maxitrs,
         G0=0.1,
         theta_eq=True,
         verbskip=1000,
@@ -320,13 +387,15 @@ def main() -> None:
     y_vals = [F00, FLS, F20, F2e, F2g, Fabra]
     t_vals = [T00, TLS, T20, T2e, T2g, Tabra]
 
+    title = fr"{title_name}, $\mu={mu:g}$"
+
     fig = make_comparison_figure(
         y_vals,
         t_vals,
         labels,
         styles,
         dashes,
-        title=title_name,
+        title=title,
         iter_xlim=ITER_XLIM,
         oracle_xlim=ORACLE_XLIM,
         gap_ylim=GAP_YLIM,
@@ -335,17 +404,20 @@ def main() -> None:
     abra_results = {
         "ABRA_GD": {
             "t": tk_abra,
-            "c": ck_abra,
+            "M": M_abra,
             "alpha": alpha_abra,
             "eta": eta_abra,
             "L": L_abra,
         },
     }
-    fig_diag = plot_abra_diagnostics(abra_results, title=f"ABRA diagnostics: {title_name}")
+    fig_diag = plot_abra_diagnostics(
+        abra_results,
+        title=f"ABRA diagnostics: {title_name}, mu={mu:g}",
+    )
 
     if args.save_dir is not None:
-        save_figure(fig, args.save_dir / f"{title_name}_adapt.png")
-        save_figure(fig_diag, args.save_dir / f"{title_name}_adapt_abra_diag.png")
+        save_figure(fig, args.save_dir / f"{title_name}_relSC_mu{mu:g}_accel_no_restart.png")
+        save_figure(fig_diag, args.save_dir / f"{title_name}_relSC_mu{mu:g}_abra_diag.png")
 
     if args.no_show:
         plt.close(fig)

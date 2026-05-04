@@ -337,39 +337,76 @@ class BurgEntropySimplex(BurgEntropy):
     def prox_map(self, g, L):
         """
         Return argmin_{x in C} { <g, x> + L h(x) } where C is the unit simplex.
+
+        The KKT equations give
+            x_i = 1 / (g_i / L + c),    sum_i x_i = 1.
+
+        Since x belongs to the simplex, adding a constant to g changes the
+        objective only by that constant.  We therefore shift g/L before solving
+        the scalar equation.  This avoids huge offsets in the multiplier and
+        prevents overflow in the bisection midpoint.
         """
-        assert L > 0, "BurgEntropySimplex prox_map only takes positive L."
+        if L <= 0:
+            raise ValueError("BurgEntropySimplex prox_map only takes positive L.")
 
         gg = _as_float_array(g) / float(L)
         if not np.all(np.isfinite(gg)):
             raise ValueError("BurgEntropySimplex prox_map: non-finite g/L.")
 
-        # Domain: c > -min(gg).
-        c_lo = np.nextafter(-np.min(gg), np.inf)
+        # Shift invariance on the simplex:
+        # <g + a*1, x> = <g, x> + a because sum_i x_i = 1.
+        gg = gg - np.min(gg)
 
-        def root_fun(c):
-            return np.sum(1.0 / (gg + c)) - 1.0
+        def root_fun(rho):
+            vals = 1.0 / (gg + rho)
+            s = np.sum(vals)
+            if not np.isfinite(s):
+                return np.inf
+            return s - 1.0
 
-        c_hi = max(c_lo + 1.0, 1.0)
-        while root_fun(c_hi) > 0.0:
-            c_hi *= 2.0
+        rho_lo = np.nextafter(0.0, np.inf)
+        rho_hi = 1.0
+
+        while root_fun(rho_hi) > 0.0:
+            rho_hi *= 2.0
+            if not np.isfinite(rho_hi):
+                raise FloatingPointError(
+                    "BurgEntropySimplex prox bracketing failed: rho_hi overflowed."
+                )
 
         for _ in range(self.max_iters):
-            c = 0.5 * (c_lo + c_hi)
-            fc = root_fun(c)
-            if abs(fc) <= self.eps:
-                break
-            if fc > 0.0:
-                c_lo = c
-            else:
-                c_hi = c
-            if c_hi - c_lo <= self.eps * max(1.0, abs(c_hi), abs(c_lo)):
+            rho = rho_lo + 0.5 * (rho_hi - rho_lo)
+            f_rho = root_fun(rho)
+
+            if abs(f_rho) <= self.eps:
                 break
 
-        c = 0.5 * (c_lo + c_hi)
-        x = 1.0 / (gg + c)
-        # Normalize to remove residual bisection error.
-        return x / np.sum(x)
+            if f_rho > 0.0:
+                rho_lo = rho
+            else:
+                rho_hi = rho
+
+            if rho_hi - rho_lo <= self.eps * max(1.0, abs(rho_hi), abs(rho_lo)):
+                break
+
+        rho = rho_lo + 0.5 * (rho_hi - rho_lo)
+        x = 1.0 / (gg + rho)
+
+        s = np.sum(x)
+        if not np.isfinite(s) or s <= 0.0 or not np.all(np.isfinite(x)):
+            raise FloatingPointError(
+                "BurgEntropySimplex prox produced invalid x: "
+                f"sum={s}, min={np.nanmin(x)}, max={np.nanmax(x)}"
+            )
+
+        # Normalize only to remove residual scalar-solve error.
+        x = x / s
+
+        if np.any(x <= 0.0) or not np.all(np.isfinite(x)):
+            raise FloatingPointError("BurgEntropySimplex prox returned invalid simplex point.")
+
+        return x
+
        
 
 class ShannonEntropy(LegendreFunction):

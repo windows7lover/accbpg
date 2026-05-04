@@ -219,7 +219,7 @@ def main() -> None:
     f, h, L, x0 = make_problem(m, n, mu=mu, randseed=10)
 
     xabra, Fabra, tk_abra, eta_abra, M_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
-        f, h, L, x0, maxitrs=1000, mu=mu, restart=False, verbskip=100
+        f, h, L, x0, maxitrs=3000, mu=mu, restart=False, verbskip=100
     )
     xabrag, Fabrag, tk_abrag, eta_abrag, M_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(
         f, h, L, x0, maxitrs=1000, mu=mu, restart=True, restart_rule="g", verbskip=100

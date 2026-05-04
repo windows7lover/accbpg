@@ -338,7 +338,7 @@ def _accept_step(state, step, eta_plus_inv, phi_plus, xplus, oracles):
 
 def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
             max_backtracks=50, restart=False, restart_rule='g',
-            return_diagnostics=False, Mmin=0.0):
+            return_diagnostics=False, Mmin=0):
     """
     Adaptive Bregman Accelerated Gradient Descent.
 
@@ -351,7 +351,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
     oracles = AbraOracles.from_problem(f, h)
     
     if restart is False:
-        Mmin = 0.0
+        Mmin = 0.25
 
     if verbose:
         print("\nABRA_GD method for min_{x in C} F(x) = f(x) + Psi(x)")
@@ -364,7 +364,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
         x0,
         mu,
         float(max(L, mu)),
-        1.0,
+        float(max(L, mu)), # M init equal L
         oracles,
     )
 
@@ -424,7 +424,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
                         restart_now = step.phi_plus > phi_prev
                     else:
                         restart_now = np.dot(step.gy, step.xplus - x_prev) > 0.0
-
+                        
                 if restart_now:
                     state.x = xplus
                     state.phi = phi_plus

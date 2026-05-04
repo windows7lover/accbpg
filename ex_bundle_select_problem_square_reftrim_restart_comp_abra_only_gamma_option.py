@@ -18,7 +18,29 @@ For the Poisson rows, the original problem construction is used with mu=0.
 
 Default behavior:
 - ABRA-GD is run without restart.
-- Use --restart to enable restart, with --restart-rule in {g, f}.
+- Use --restart to enable one restarted ABRA-GD variant, with --restart-rule in {g, f}.
+- Use --restart-comp / --restart_comp to compare all ABRA-GD restart strategies.
+
+Normal comparison mode:
+- BPG
+- BPG-LS
+- ABPG
+- ABPG-e
+- ABPG-g
+- ABRA-GD, optionally restarted if --restart is passed
+
+Acceleration exponent:
+- Use --gamma VALUE to override gamma everywhere acceleration uses an exponent:
+  ABPG(gamma), ABPG-e(gamma0), and ABPG-g(gamma).
+- If --gamma is omitted, the original per-problem defaults are kept.
+
+Restart-comparison mode (--restart-comp):
+- ABRA-GD without restart
+- ABRA-GD with g-restart
+- ABRA-GD with f-restart
+- All three columns compare only these ABRA-GD variants.
+
+Figure format:
 - One paper-scale figure is produced, with one row per problem and three near-square columns:
     1. objective gap vs iteration
     2. objective gap vs oracle calls
@@ -114,10 +136,14 @@ class ExperimentResult:
     dashes: list[list[int]]
     y_vals: list[np.ndarray]
     t_vals: list[np.ndarray]
-    M_vals: np.ndarray
+    m_labels: list[str]
+    m_styles: list[str]
+    m_dashes: list[list[int]]
+    m_vals: list[np.ndarray]
     f_ref: float
     restart: bool
     restart_rule: str
+    restart_comp: bool
     plot_itrs: int
     run_itrs: int
 
@@ -243,6 +269,32 @@ def make_poisson_problem(kind: str):
     raise ValueError("Poisson kind must be 'L1' or 'L2'.")
 
 
+def override_accel_gamma(method_kwargs: dict, accel_gamma: float | None) -> dict:
+    """
+    Optionally override all acceleration exponents with one value.
+
+    This affects:
+    - ABPG:      gamma
+    - ABPG-e:    gamma0
+    - ABPG-g:    gamma
+
+    If accel_gamma is None, the original problem-specific defaults are kept.
+    """
+    out = {name: dict(kwargs) for name, kwargs in method_kwargs.items()}
+
+    if accel_gamma is None:
+        return out
+
+    if "abpg" in out:
+        out["abpg"]["gamma"] = float(accel_gamma)
+    if "expo" in out:
+        out["expo"]["gamma0"] = float(accel_gamma)
+    if "gain" in out:
+        out["gain"]["gamma"] = float(accel_gamma)
+
+    return out
+
+
 def finite_values(a) -> np.ndarray:
     arr = np.asarray(a, dtype=float)
     return arr[np.isfinite(arr)]
@@ -336,6 +388,7 @@ def run_methods(
     run_factor: float,
     restart: bool,
     restart_rule: str,
+    restart_comp: bool,
     verbskip: int,
     method_kwargs: dict,
 ) -> ExperimentResult:
@@ -343,87 +396,144 @@ def run_methods(
     print(f"\n=== Experiment: {title} ===")
     print(f"Running {run_itrs} iterations; plotting first {plot_itrs} iterations.")
 
-    bpg_ls_kwargs = method_kwargs.get("bpg_ls", {})
-    abpg_kwargs = method_kwargs.get("abpg", {})
-    expo_kwargs = method_kwargs.get("expo", {})
-    gain_kwargs = method_kwargs.get("gain", {})
+    if restart_comp:
+        print("Restart-comparison mode: ABRA-GD, ABRA-GD g-RS, ABRA-GD f-RS.")
 
-    x00, F00, _, T00 = accbpg.BPG(
-        f,
-        h,
-        L,
-        x0,
-        maxitrs=run_itrs,
-        linesearch=False,
-        verbskip=verbskip,
-    )
+        xabra, Fabra, tk_abra, eta_abra, M_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            mu=mu_for_abra,
+            restart=False,
+            verbskip=verbskip,
+        )
 
-    xLS, FLS, _, TLS = accbpg.BPG(
-        f,
-        h,
-        L,
-        x0,
-        maxitrs=run_itrs,
-        linesearch=True,
-        verbskip=verbskip,
-        **bpg_ls_kwargs,
-    )
+        xabrag, Fabrag, tk_abrag, eta_abrag, M_abrag, alpha_abrag, L_abrag, Tabrag = accbpg.ABRA_GD(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            mu=mu_for_abra,
+            restart=True,
+            restart_rule="g",
+            verbskip=verbskip,
+        )
 
-    x20, F20, _, T20 = accbpg.ABPG(
-        f,
-        h,
-        L,
-        x0,
-        maxitrs=run_itrs,
-        verbskip=verbskip,
-        **abpg_kwargs,
-    )
+        xabraf, Fabraf, tk_abraf, eta_abraf, M_abraf, alpha_abraf, L_abraf, Tabraf = accbpg.ABRA_GD(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            mu=mu_for_abra,
+            restart=True,
+            restart_rule="f",
+            verbskip=verbskip,
+        )
 
-    x2e, F2e, _, _, T2e = accbpg.ABPG_expo(
-        f,
-        h,
-        L,
-        x0,
-        maxitrs=run_itrs,
-        verbskip=verbskip,
-        **expo_kwargs,
-    )
+        labels = [r"ABRA-GD", r"ABRA-GD g-RS", r"ABRA-GD f-RS"]
+        styles = ["C2-", "C1--", "C3:"]
+        dashes = [[], [4, 2], [1, 2]]
 
-    x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(
-        f,
-        h,
-        L,
-        x0,
-        maxitrs=run_itrs,
-        verbskip=verbskip,
-        **gain_kwargs,
-    )
+        y_vals_full = [Fabra, Fabrag, Fabraf]
+        t_vals_full = [Tabra, Tabrag, Tabraf]
 
-    xabra, Fabra, tk_abra, eta_abra, M_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
-        f,
-        h,
-        L,
-        x0,
-        maxitrs=run_itrs,
-        mu=mu_for_abra,
-        restart=restart,
-        restart_rule=restart_rule,
-        verbskip=verbskip,
-    )
+        m_labels = labels.copy()
+        m_styles = styles.copy()
+        m_dashes = [d.copy() for d in dashes]
+        m_vals_full = [M_abra, M_abrag, M_abraf]
 
-    abra_label = rf"ABRA-GD {restart_rule}-RS" if restart else r"ABRA-GD"
-    labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", abra_label]
-    styles = ["k:", "g-", "b-.", "k-", "r--", "c-"]
-    dashes = [[1, 2], [], [4, 2, 1, 2], [], [4, 2], []]
+    else:
+        bpg_ls_kwargs = method_kwargs.get("bpg_ls", {})
+        abpg_kwargs = method_kwargs.get("abpg", {})
+        expo_kwargs = method_kwargs.get("expo", {})
+        gain_kwargs = method_kwargs.get("gain", {})
+
+        x00, F00, _, T00 = accbpg.BPG(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            linesearch=False,
+            verbskip=verbskip,
+        )
+
+        x20, F20, _, T20 = accbpg.ABPG(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            verbskip=verbskip,
+            **abpg_kwargs,
+        )
+
+        xLS, FLS, _, TLS = accbpg.BPG(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            linesearch=True,
+            verbskip=verbskip,
+            **bpg_ls_kwargs,
+        )
+
+        x2e, F2e, _, _, T2e = accbpg.ABPG_expo(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            verbskip=verbskip,
+            **expo_kwargs,
+        )
+
+        x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            verbskip=verbskip,
+            **gain_kwargs,
+        )
+
+        xabra, Fabra, tk_abra, eta_abra, M_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
+            f,
+            h,
+            L,
+            x0,
+            maxitrs=run_itrs,
+            mu=mu_for_abra,
+            restart=restart,
+            restart_rule=restart_rule,
+            verbskip=verbskip,
+        )
+
+        abra_label = rf"ABRA-GD {restart_rule}-RS" if restart else r"ABRA-GD"
+        labels = [r"BPG", r"BPG-LS", r"ABPG", r"ABPG-e", r"ABPG-g", abra_label]
+        styles = ["k:", "g-", "b-.", "k-", "r--", "c-"]
+        dashes = [[1, 2], [], [4, 2, 1, 2], [], [4, 2], []]
+
+        y_vals_full = [F00, FLS, F20, F2e, F2g, Fabra]
+        t_vals_full = [T00, TLS, T20, T2e, T2g, Tabra]
+
+        m_labels = [abra_label]
+        m_styles = ["c-"]
+        m_dashes = [[]]
+        m_vals_full = [M_abra]
 
     # Use the full run_factor histories to estimate F_ref, then trim plots.
-    y_vals_full = [F00, FLS, F20, F2e, F2g, Fabra]
-    t_vals_full = [T00, TLS, T20, T2e, T2g, Tabra]
     _, f_ref = compute_gaps(y_vals_full)
 
     y_vals_plot = [trim_history(v, plot_itrs) for v in y_vals_full]
     t_vals_plot = [trim_history(v, plot_itrs) for v in t_vals_full]
-    M_plot = trim_history(M_abra, plot_itrs)
+    m_vals_plot = [trim_history(v, plot_itrs) for v in m_vals_full]
 
     return ExperimentResult(
         title=title,
@@ -433,10 +543,14 @@ def run_methods(
         dashes=dashes,
         y_vals=y_vals_plot,
         t_vals=t_vals_plot,
-        M_vals=M_plot,
+        m_labels=m_labels,
+        m_styles=m_styles,
+        m_dashes=m_dashes,
+        m_vals=m_vals_plot,
         f_ref=f_ref,
         restart=restart,
         restart_rule=restart_rule,
+        restart_comp=restart_comp,
         plot_itrs=plot_itrs,
         run_itrs=run_itrs,
     )
@@ -451,6 +565,8 @@ def run_one_libsvm_dataset(
     run_factor: float,
     restart: bool,
     restart_rule: str,
+    restart_comp: bool,
+    accel_gamma: float | None,
     verbskip: int,
 ) -> ExperimentResult:
     f, h, L, x0 = make_libsvm_relsc_problem(filename, mu=mu)
@@ -466,13 +582,17 @@ def run_one_libsvm_dataset(
         run_factor=run_factor,
         restart=restart,
         restart_rule=restart_rule,
+        restart_comp=restart_comp,
         verbskip=verbskip,
-        method_kwargs={
-            "bpg_ls": {"ls_ratio": 1.2},
-            "abpg": {"gamma": 2.0, "theta_eq": True},
-            "expo": {"gamma0": 3, "theta_eq": True, "Gmargin": 100},
-            "gain": {"gamma": 2, "G0": 0.1, "theta_eq": True},
-        },
+        method_kwargs=override_accel_gamma(
+            {
+                "bpg_ls": {"ls_ratio": 1.2},
+                "abpg": {"gamma": 2.0, "theta_eq": True},
+                "expo": {"gamma0": 3, "theta_eq": True, "Gmargin": 100},
+                "gain": {"gamma": 2, "G0": 0.1, "theta_eq": True},
+            },
+            accel_gamma,
+        ),
     )
 
 
@@ -483,9 +603,12 @@ def run_one_poisson_problem(
     run_factor: float,
     restart: bool,
     restart_rule: str,
+    restart_comp: bool,
+    accel_gamma: float | None,
     verbskip: int,
 ) -> ExperimentResult:
     f, h, L, x0, title, mu, method_kwargs = make_poisson_problem(kind)
+    method_kwargs = override_accel_gamma(method_kwargs, accel_gamma)
     return run_methods(
         f=f,
         h=h,
@@ -497,6 +620,7 @@ def run_one_poisson_problem(
         run_factor=run_factor,
         restart=restart,
         restart_rule=restart_rule,
+        restart_comp=restart_comp,
         verbskip=verbskip,
         method_kwargs=method_kwargs,
     )
@@ -534,15 +658,19 @@ def make_big_figure(
         iter_x = [np.arange(len(g), dtype=float) for g in gaps]
         oracle_x = [np.asarray(t, dtype=float) for t in result.t_vals]
 
-        M = np.asarray(result.M_vals, dtype=float)
-        M = np.where(np.isfinite(M) & (M > 0), M, np.nan)
-        M_x = np.arange(len(M), dtype=float)
+        m_clean = []
+        m_x = []
+        for m in result.m_vals:
+            m_arr = np.asarray(m, dtype=float)
+            m_arr = np.where(np.isfinite(m_arr) & (m_arr > 0), m_arr, np.nan)
+            m_clean.append(m_arr)
+            m_x.append(np.arange(len(m_arr), dtype=float))
 
         gap_ylim = infer_log_ylim(gaps)
-        M_ylim = infer_log_ylim([M])
+        m_ylim = infer_log_ylim(m_clean)
         iter_xlim = (0.0, infer_x_upper(iter_x))
         oracle_xlim = (0.0, infer_x_upper(oracle_x))
-        M_xlim = (0.0, infer_x_upper([M_x]))
+        m_xlim = (0.0, infer_x_upper(m_x))
 
         plot_log_series(ax1, iter_x, gaps, result.labels, result.styles, result.dashes)
         ax1.set_yscale("log")
@@ -572,11 +700,10 @@ def make_big_figure(
         if row == 0:
             comparison_handles, comparison_labels = ax2.get_legend_handles_labels()
 
-        abra_label = rf"ABRA-GD {result.restart_rule}-RS" if result.restart else r"ABRA-GD"
-        ax3.plot(M_x, M, "c-", label=abra_label)
+        plot_log_series(ax3, m_x, m_clean, result.m_labels, result.m_styles, result.m_dashes)
         ax3.set_yscale("log")
-        ax3.set_xlim(*M_xlim)
-        ax3.set_ylim(*M_ylim)
+        ax3.set_xlim(*m_xlim)
+        ax3.set_ylim(*m_ylim)
         if row == nrows - 1:
             ax3.set_xlabel(r"Iteration number $k$")
         else:
@@ -585,8 +712,12 @@ def make_big_figure(
         ax3.set_ylabel(r"$M_k$")
 
         # Single global legend: top-right panel.
-        if row == 0 and comparison_handles is not None and comparison_labels is not None:
-            ax3.legend(comparison_handles, comparison_labels, loc="best", frameon=False)
+        if row == 0:
+            if result.restart_comp:
+                handles, labels = ax3.get_legend_handles_labels()
+                ax3.legend(handles, labels, loc="best", frameon=False)
+            elif comparison_handles is not None and comparison_labels is not None:
+                ax3.legend(comparison_handles, comparison_labels, loc="best", frameon=False)
 
         for ax in (ax1, ax2, ax3):
             set_box_aspect_safe(ax, panel_aspect)
@@ -615,23 +746,6 @@ def parse_libsvm_dataset_list(raw: str) -> list[str]:
     for item in raw.split(","):
         item = item.strip().lower()
         if item:
-            out.append(item)
-    return out
-
-
-def parse_poisson_list(raw: str) -> list[str]:
-    raw = raw.strip().lower()
-    if raw in {"", "none", "no", "false"}:
-        return []
-    if raw == "all":
-        return ["L1", "L2"]
-
-    out = []
-    for item in raw.split(","):
-        item = item.strip().upper()
-        if item:
-            if item not in POISSON_PROBLEMS:
-                raise ValueError("Poisson choices are L1, L2, all, or none.")
             out.append(item)
     return out
 
@@ -681,6 +795,17 @@ def main() -> None:
         help="Relative strong convexity added to LIBSVM D-optimal rows as f <- f + mu * h.",
     )
     parser.add_argument(
+        "--gamma",
+        type=float,
+        default=None,
+        help=(
+            "Override the acceleration exponent everywhere it appears: "
+            "ABPG gamma, ABPG-e gamma0, and ABPG-g gamma. "
+            "If omitted, the original per-problem defaults are used. "
+            "Use --gamma 1 for the exponent-one setting."
+        ),
+    )
+    parser.add_argument(
         "--maxitrs",
         type=int,
         default=4000,
@@ -706,14 +831,24 @@ def main() -> None:
     parser.add_argument(
         "--restart",
         action="store_true",
-        help="Enable restarted ABRA-GD. Default is no restart.",
+        help="Enable one restarted ABRA-GD variant. Ignored when --restart-comp is used.",
     )
     parser.add_argument(
         "--restart-rule",
         type=str,
         default="g",
         choices=["g", "f"],
-        help="Restart rule used only when --restart is enabled.",
+        help="Restart rule used only when --restart is enabled and --restart-comp is not used.",
+    )
+    parser.add_argument(
+        "--restart-comp",
+        "--restart_comp",
+        dest="restart_comp",
+        action="store_true",
+        help=(
+            "Compare only ABRA-GD without restart, with g-restart, and with f-restart. "
+            "No BPG, BPG-LS, ABPG, ABPG-e, or ABPG-g baselines are included in this mode."
+        ),
     )
     parser.add_argument(
         "--save-dir",
@@ -779,6 +914,9 @@ def main() -> None:
     run_itrs_for_logging = run_length(plot_itrs, args.run_factor)
     verbskip = max(1, min(1000, run_itrs_for_logging // 5 if run_itrs_for_logging >= 5 else 1))
 
+    if args.restart_comp and args.restart:
+        print("Warning: --restart is ignored because --restart-comp is enabled.")
+
     results: list[ExperimentResult] = []
 
     for dataset_key in libsvm_keys:
@@ -791,6 +929,8 @@ def main() -> None:
             run_factor=args.run_factor,
             restart=args.restart,
             restart_rule=args.restart_rule,
+            restart_comp=args.restart_comp,
+            accel_gamma=args.gamma,
             verbskip=verbskip,
         )
         results.append(result)
@@ -802,6 +942,8 @@ def main() -> None:
             run_factor=args.run_factor,
             restart=args.restart,
             restart_rule=args.restart_rule,
+            restart_comp=args.restart_comp,
+            accel_gamma=args.gamma,
             verbskip=verbskip,
         )
         results.append(result)
@@ -814,12 +956,16 @@ def main() -> None:
     )
 
     suffix = "debug" if args.debug else f"{plot_itrs}shown_{args.run_factor:g}xrun"
-    restart_suffix = f"{args.restart_rule}RS" if args.restart else "noRS"
+    if args.restart_comp:
+        restart_suffix = "restartComp"
+    else:
+        restart_suffix = f"{args.restart_rule}RS" if args.restart else "noRS"
+    gamma_suffix = f"_gamma{args.gamma:g}" if args.gamma is not None else ""
     libsvm_suffix = "_".join(libsvm_keys) if libsvm_keys else "noDopt"
     poisson_suffix = "_".join(poisson_keys) if poisson_keys else "noPoisson"
     out_base = (
         args.save_dir
-        / f"bundle_square_{problem}_{libsvm_suffix}_{poisson_suffix}_mu{args.mu:g}_{restart_suffix}_{suffix}"
+        / f"bundle_square_{problem}_{libsvm_suffix}_{poisson_suffix}_mu{args.mu:g}{gamma_suffix}_{restart_suffix}_{suffix}"
     )
     formats = [fmt.strip() for fmt in args.formats.split(",") if fmt.strip()]
 

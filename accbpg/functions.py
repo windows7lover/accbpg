@@ -3,6 +3,7 @@
 
 
 import numpy as np
+from scipy.optimize import brentq
 
 
 def _as_float_array(x):
@@ -318,92 +319,100 @@ class BurgEntropyL2(BurgEntropy):
        
 class BurgEntropySimplex(BurgEntropy):
     """
-    h(x) = - sum_i log(x_i), on the standard simplex
-        C = {x >= 0, sum_i x_i = 1}.
+    Burg entropy on the simplex:
 
-    The prox solves
-        min_{x in C} <g, x> + L h(x),
-    whose solution is
-        x_i = 1 / (g_i / L + c),
-    with c chosen so that sum_i x_i = 1.
+        h(x) = - sum_i log(x_i),
+        C = {x > 0, sum_i x_i = 1}.
+
+    Solves
+
+        argmin_{x in C} <g, x> + L h(x)
+
+    via the KKT form
+
+        x_i = 1 / ((g_i - min_j g_j) / L + rho),
+
+    where rho is chosen so that sum_i x_i = 1.
+
+    Uses scipy.optimize.brentq instead of a handwritten bisection.
     """
 
-    def __init__(self, eps=1e-12, max_iters=200):
-        assert eps > 0, "BurgEntropySimplex: eps should be positive."
-        assert max_iters > 0, "max_iters must be positive."
+    def __init__(self, eps=1e-12, max_iters=100, check_kkt=False):
+        if eps <= 0:
+            raise ValueError("eps must be positive.")
+        if max_iters <= 0:
+            raise ValueError("max_iters must be positive.")
+
         self.eps = float(eps)
         self.max_iters = int(max_iters)
+        self.check_kkt = bool(check_kkt)
 
     def prox_map(self, g, L):
-        """
-        Return argmin_{x in C} { <g, x> + L h(x) } where C is the unit simplex.
-
-        The KKT equations give
-            x_i = 1 / (g_i / L + c),    sum_i x_i = 1.
-
-        Since x belongs to the simplex, adding a constant to g changes the
-        objective only by that constant.  We therefore shift g/L before solving
-        the scalar equation.  This avoids huge offsets in the multiplier and
-        prevents overflow in the bisection midpoint.
-        """
         if L <= 0:
-            raise ValueError("BurgEntropySimplex prox_map only takes positive L.")
+            raise ValueError("BurgEntropySimplex prox_map requires L > 0.")
 
-        gg = _as_float_array(g) / float(L)
-        if not np.all(np.isfinite(gg)):
-            raise ValueError("BurgEntropySimplex prox_map: non-finite g/L.")
+        g = np.asarray(g, dtype=np.float64)
 
-        # Shift invariance on the simplex:
-        # <g + a*1, x> = <g, x> + a because sum_i x_i = 1.
-        gg = gg - np.min(gg)
+        if g.ndim != 1:
+            raise ValueError("BurgEntropySimplex prox_map expects a 1D vector.")
+        if g.size == 0:
+            raise ValueError("BurgEntropySimplex prox_map received an empty vector.")
+        if not np.all(np.isfinite(g)):
+            raise ValueError("BurgEntropySimplex prox_map received non-finite g.")
 
-        def root_fun(rho):
-            vals = 1.0 / (gg + rho)
-            s = np.sum(vals)
-            if not np.isfinite(s):
-                return np.inf
-            return s - 1.0
+        L = float(L)
 
-        rho_lo = np.nextafter(0.0, np.inf)
-        rho_hi = 1.0
+        # Shift before division. On the simplex, adding a constant to g
+        # only adds a constant to the objective, so the minimizer is unchanged.
+        g_shift = g - np.min(g)
+        a = g_shift / L
 
-        while root_fun(rho_hi) > 0.0:
-            rho_hi *= 2.0
-            if not np.isfinite(rho_hi):
-                raise FloatingPointError(
-                    "BurgEntropySimplex prox bracketing failed: rho_hi overflowed."
-                )
-
-        for _ in range(self.max_iters):
-            rho = rho_lo + 0.5 * (rho_hi - rho_lo)
-            f_rho = root_fun(rho)
-
-            if abs(f_rho) <= self.eps:
-                break
-
-            if f_rho > 0.0:
-                rho_lo = rho
-            else:
-                rho_hi = rho
-
-            if rho_hi - rho_lo <= self.eps * max(1.0, abs(rho_hi), abs(rho_lo)):
-                break
-
-        rho = rho_lo + 0.5 * (rho_hi - rho_lo)
-        x = 1.0 / (gg + rho)
-
-        s = np.sum(x)
-        if not np.isfinite(s) or s <= 0.0 or not np.all(np.isfinite(x)):
+        if not np.all(np.isfinite(a)):
             raise FloatingPointError(
-                "BurgEntropySimplex prox produced invalid x: "
-                f"sum={s}, min={np.nanmin(x)}, max={np.nanmax(x)}"
+                "BurgEntropySimplex prox_map produced non-finite shifted g / L. "
+                "This usually means L is numerically too small."
             )
 
-        # Normalize only to remove residual scalar-solve error.
+        def root_fun(rho):
+            return np.sum(1.0 / (a + rho)) - 1.0
+
+        # Since min(a)=0, root_fun(0+) = +inf.
+        # Since a_i >= 0, root_fun(n) <= n/n - 1 = 0.
+        rho_lo = np.nextafter(0.0, 1.0)
+        rho_hi = max(1.0, float(g.size))
+
+        rho = brentq(
+            root_fun,
+            rho_lo,
+            rho_hi,
+            xtol=self.eps,
+            rtol=max(self.eps, 8.0 * np.finfo(np.float64).eps),
+            maxiter=self.max_iters,
+        )
+
+        x = 1.0 / (a + rho)
+
+        if not np.all(np.isfinite(x)):
+            raise FloatingPointError("BurgEntropySimplex prox_map returned non-finite x.")
+        if np.any(x <= 0.0):
+            raise FloatingPointError("BurgEntropySimplex prox_map returned non-positive x.")
+
+        s = np.sum(x)
+        if not np.isfinite(s) or s <= 0.0:
+            raise FloatingPointError(f"Invalid simplex sum: {s}.")
+
+        # Usually unnecessary, but removes scalar solver residual.
         x = x / s
 
-        if np.any(x <= 0.0) or not np.all(np.isfinite(x)):
-            raise FloatingPointError("BurgEntropySimplex prox returned invalid simplex point.")
+        if self.check_kkt:
+            # KKT: g_i - L / x_i should be constant over i.
+            kkt_spread = np.ptp(g - L / x)
+            scale = max(1.0, np.linalg.norm(g, ord=np.inf), L / np.min(x))
+            if kkt_spread > 1e-8 * scale:
+                raise FloatingPointError(
+                    "BurgEntropySimplex prox_map failed KKT check: "
+                    f"spread={kkt_spread:.3e}, scale={scale:.3e}, L={L:.3e}"
+                )
 
         return x
 

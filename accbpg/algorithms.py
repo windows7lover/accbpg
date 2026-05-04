@@ -351,7 +351,7 @@ def ABRA_GD(f, h, L, x0, maxitrs, mu=0.0, epsilon=0, verbose=True, verbskip=1,
     oracles = AbraOracles.from_problem(f, h)
     
     if restart is False:
-        Mmin = 0.25
+        Mmin = 0.0
 
     if verbose:
         print("\nABRA_GD method for min_{x in C} F(x) = f(x) + Psi(x)")

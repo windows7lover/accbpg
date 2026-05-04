@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
 """
-Bundle experiment: relatively strongly convex D-optimal design on LIBSVM datasets.
+Bundle launcher: LIBSVM RelSC D-optimal design and Poisson inverse problems.
 
-Datasets:
-- abalone_scale
-- bodyfat_scale
-- mpg_scale
-- housing_scale
+Use --problem to choose what to run:
+- dopt: LIBSVM D-optimal datasets: abalone, bodyfat, mpg, housing
+- poisson-l1: Poisson L1 bundle
+- poisson-l2: Poisson L2 bundle
+- poisson-all: Poisson L1 + Poisson L2
+- all: D-opt + Poisson L1 + Poisson L2
 
-Construction:
-    f(x) = f0(x) + mu * h(x)
-    L    = L0 + mu
+For the LIBSVM D-optimal rows, we convexify the smooth part by replacing
+    f(x) = f0(x) + mu * h(x),
+    L    = L0 + mu,
+where h is the Burg entropy / Legendre kernel used by the D-optimal problem.
+
+For the Poisson rows, the original problem construction is used with mu=0.
 
 Default behavior:
 - ABRA-GD is run without restart.
 - Use --restart to enable restart, with --restart-rule in {g, f}.
-- One paper-scale figure is produced, with one row per dataset and three near-square columns:
+- One paper-scale figure is produced, with one row per problem and three near-square columns:
     1. objective gap vs iteration
     2. objective gap vs oracle calls
-    3. ABRA-GD M_k vs iteration
+    3. ABRA-GD M_k-like diagnostic vs iteration
 - Axes are inferred adaptively for each row.
 - Methods run for run_factor * maxitrs, but plots are trimmed to maxitrs;
   F_ref is computed from the longer histories to reduce end-point reference artifacts.
-- Only the middle graph in each row has a title: "dataset, mu=...".
-- By default, figures are saved as PNG and EPS with near-square subplot panels.
+- Only the middle graph in each row has a title: "problem, mu=...".
+- By default, figures are saved as PNG and EPS.
 """
 
 from __future__ import annotations
@@ -58,12 +62,14 @@ LIBSVM_REGRESSION_BASE_URL = (
     "https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/regression"
 )
 
-DATASETS = {
+LIBSVM_DATASETS = {
     "abalone": "abalone_scale",
     "bodyfat": "bodyfat_scale",
     "mpg": "mpg_scale",
     "housing": "housing_scale",
 }
+
+POISSON_PROBLEMS = {"L1", "L2"}
 
 
 class RelStrongConvexified:
@@ -100,8 +106,8 @@ class RelStrongConvexified:
 
 
 @dataclass
-class DatasetResult:
-    dataset_key: str
+class ExperimentResult:
+    title: str
     mu: float
     labels: list[str]
     styles: list[str]
@@ -114,11 +120,6 @@ class DatasetResult:
     restart_rule: str
     plot_itrs: int
     run_itrs: int
-
-
-def save_figure(fig, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.02)
 
 
 def save_figure_formats(fig, base_path: Path, formats: list[str]) -> None:
@@ -171,12 +172,12 @@ def download_file(url: str, path: Path) -> None:
     )
 
 
-def ensure_dataset(dataset_key: str, data_dir: Path, *, download: bool) -> Path:
-    if dataset_key not in DATASETS:
-        valid = ", ".join(DATASETS)
-        raise ValueError(f"Unknown dataset '{dataset_key}'. Valid choices: {valid}.")
+def ensure_libsvm_dataset(dataset_key: str, data_dir: Path, *, download: bool) -> Path:
+    if dataset_key not in LIBSVM_DATASETS:
+        valid = ", ".join(LIBSVM_DATASETS)
+        raise ValueError(f"Unknown LIBSVM dataset '{dataset_key}'. Valid choices: {valid}.")
 
-    filename = DATASETS[dataset_key]
+    filename = LIBSVM_DATASETS[dataset_key]
     path = data_dir / filename
 
     if path.exists():
@@ -192,11 +193,54 @@ def ensure_dataset(dataset_key: str, data_dir: Path, *, download: bool) -> Path:
     return path
 
 
-def make_problem(filename: str | Path, *, mu: float):
+def make_libsvm_relsc_problem(filename: str | Path, *, mu: float):
     f0, h, L0, x0 = accbpg.D_opt_libsvm(str(filename))
     f = RelStrongConvexified(f0, h, mu)
     L = L0 + mu
     return f, h, L, x0
+
+
+def make_poisson_problem(kind: str):
+    kind = kind.upper()
+    if kind == "L1":
+        m, n = 200, 100
+        f, h, L, x0 = accbpg.Poisson_regrL1(
+            m,
+            n,
+            noise=0.0001,
+            lamda=0.1,
+            randseed=1,
+        )
+        return f, h, L, x0, f"Poisson L1, m={m}, n={n}", 0.0, {
+            "bpg_ls": {},
+            "abpg": {"gamma": 2.0, "theta_eq": True},
+            "expo": {"gamma0": 3, "theta_eq": False, "Gmargin": 3},
+            "gain": {"gamma": 2, "G0": 0.1, "theta_eq": False},
+        }
+
+    if kind == "L2":
+        m, n = 100, 1000
+        f, h, L, x0 = accbpg.Poisson_regrL2(
+            m,
+            n,
+            noise=0.001,
+            lamda=0.001,
+            randseed=1,
+        )
+        return f, h, L, x0, f"Poisson L2, m={m}, n={n}", 0.0, {
+            "bpg_ls": {"ls_ratio": 1.5},
+            "abpg": {"gamma": 2.0, "theta_eq": False},
+            "expo": {"gamma0": 3, "theta_eq": False, "Gmargin": 1},
+            "gain": {
+                "gamma": 2,
+                "G0": 0.1,
+                "ls_inc": 1.5,
+                "ls_dec": 1.5,
+                "theta_eq": True,
+            },
+        }
+
+    raise ValueError("Poisson kind must be 'L1' or 'L2'.")
 
 
 def finite_values(a) -> np.ndarray:
@@ -280,21 +324,29 @@ def plot_log_series(ax, x_vals, y_vals, labels, styles, dashes):
             line.set_dashes(dash)
 
 
-def run_one_dataset(
+def run_methods(
     *,
-    dataset_key: str,
-    filename: Path,
-    mu: float,
+    f,
+    h,
+    L,
+    x0,
+    title: str,
+    mu_for_abra: float,
     plot_itrs: int,
     run_factor: float,
     restart: bool,
     restart_rule: str,
     verbskip: int,
-) -> DatasetResult:
+    method_kwargs: dict,
+) -> ExperimentResult:
     run_itrs = run_length(plot_itrs, run_factor)
-    print(f"\n=== Dataset: {dataset_key} ({filename}) ===")
+    print(f"\n=== Experiment: {title} ===")
     print(f"Running {run_itrs} iterations; plotting first {plot_itrs} iterations.")
-    f, h, L, x0 = make_problem(filename, mu=mu)
+
+    bpg_ls_kwargs = method_kwargs.get("bpg_ls", {})
+    abpg_kwargs = method_kwargs.get("abpg", {})
+    expo_kwargs = method_kwargs.get("expo", {})
+    gain_kwargs = method_kwargs.get("gain", {})
 
     x00, F00, _, T00 = accbpg.BPG(
         f,
@@ -313,8 +365,8 @@ def run_one_dataset(
         x0,
         maxitrs=run_itrs,
         linesearch=True,
-        ls_ratio=1.2,
         verbskip=verbskip,
+        **bpg_ls_kwargs,
     )
 
     x20, F20, _, T20 = accbpg.ABPG(
@@ -322,10 +374,9 @@ def run_one_dataset(
         h,
         L,
         x0,
-        gamma=2.0,
         maxitrs=run_itrs,
-        theta_eq=True,
         verbskip=verbskip,
+        **abpg_kwargs,
     )
 
     x2e, F2e, _, _, T2e = accbpg.ABPG_expo(
@@ -333,11 +384,9 @@ def run_one_dataset(
         h,
         L,
         x0,
-        gamma0=3,
         maxitrs=run_itrs,
-        theta_eq=True,
-        Gmargin=100,
         verbskip=verbskip,
+        **expo_kwargs,
     )
 
     x2g, F2g, _, _, _, T2g = accbpg.ABPG_gain(
@@ -345,11 +394,9 @@ def run_one_dataset(
         h,
         L,
         x0,
-        gamma=2,
         maxitrs=run_itrs,
-        G0=0.1,
-        theta_eq=True,
         verbskip=verbskip,
+        **gain_kwargs,
     )
 
     xabra, Fabra, tk_abra, eta_abra, M_abra, alpha_abra, L_abra, Tabra = accbpg.ABRA_GD(
@@ -358,7 +405,7 @@ def run_one_dataset(
         L,
         x0,
         maxitrs=run_itrs,
-        mu=mu,
+        mu=mu_for_abra,
         restart=restart,
         restart_rule=restart_rule,
         verbskip=verbskip,
@@ -369,7 +416,7 @@ def run_one_dataset(
     styles = ["k:", "g-", "b-.", "k-", "r--", "c-"]
     dashes = [[1, 2], [], [4, 2, 1, 2], [], [4, 2], []]
 
-    # Use the full 1.3x histories to estimate F_ref, then trim plots.
+    # Use the full run_factor histories to estimate F_ref, then trim plots.
     y_vals_full = [F00, FLS, F20, F2e, F2g, Fabra]
     t_vals_full = [T00, TLS, T20, T2e, T2g, Tabra]
     _, f_ref = compute_gaps(y_vals_full)
@@ -378,9 +425,9 @@ def run_one_dataset(
     t_vals_plot = [trim_history(v, plot_itrs) for v in t_vals_full]
     M_plot = trim_history(M_abra, plot_itrs)
 
-    return DatasetResult(
-        dataset_key=dataset_key,
-        mu=mu,
+    return ExperimentResult(
+        title=title,
+        mu=mu_for_abra,
         labels=labels,
         styles=styles,
         dashes=dashes,
@@ -392,6 +439,66 @@ def run_one_dataset(
         restart_rule=restart_rule,
         plot_itrs=plot_itrs,
         run_itrs=run_itrs,
+    )
+
+
+def run_one_libsvm_dataset(
+    *,
+    dataset_key: str,
+    filename: Path,
+    mu: float,
+    plot_itrs: int,
+    run_factor: float,
+    restart: bool,
+    restart_rule: str,
+    verbskip: int,
+) -> ExperimentResult:
+    f, h, L, x0 = make_libsvm_relsc_problem(filename, mu=mu)
+    title = dataset_key
+    return run_methods(
+        f=f,
+        h=h,
+        L=L,
+        x0=x0,
+        title=title,
+        mu_for_abra=mu,
+        plot_itrs=plot_itrs,
+        run_factor=run_factor,
+        restart=restart,
+        restart_rule=restart_rule,
+        verbskip=verbskip,
+        method_kwargs={
+            "bpg_ls": {"ls_ratio": 1.2},
+            "abpg": {"gamma": 2.0, "theta_eq": True},
+            "expo": {"gamma0": 3, "theta_eq": True, "Gmargin": 100},
+            "gain": {"gamma": 2, "G0": 0.1, "theta_eq": True},
+        },
+    )
+
+
+def run_one_poisson_problem(
+    *,
+    kind: str,
+    plot_itrs: int,
+    run_factor: float,
+    restart: bool,
+    restart_rule: str,
+    verbskip: int,
+) -> ExperimentResult:
+    f, h, L, x0, title, mu, method_kwargs = make_poisson_problem(kind)
+    return run_methods(
+        f=f,
+        h=h,
+        L=L,
+        x0=x0,
+        title=title,
+        mu_for_abra=mu,
+        plot_itrs=plot_itrs,
+        run_factor=run_factor,
+        restart=restart,
+        restart_rule=restart_rule,
+        verbskip=verbskip,
+        method_kwargs=method_kwargs,
     )
 
 
@@ -407,14 +514,14 @@ def set_box_aspect_safe(ax, aspect: float | None) -> None:
 
 
 def make_big_figure(
-    results: list[DatasetResult],
+    results: list[ExperimentResult],
     *,
     fig_width: float = 8.4,
     row_height: float = 2.35,
     panel_aspect: float | None = 1.0,
 ):
     if not results:
-        raise ValueError("No dataset results to plot.")
+        raise ValueError("No experiment results to plot.")
 
     nrows = len(results)
     fig_height = max(row_height * nrows, 2.2)
@@ -458,7 +565,7 @@ def make_big_figure(
             ax2.set_xlabel("")
             ax2.tick_params(labelbottom=False)
         ax2.set_ylabel("")
-        ax2.set_title(fr"{result.dataset_key}, $\mu={result.mu:g}$", pad=2)
+        ax2.set_title(fr"{result.title}, $\mu={result.mu:g}$", pad=2)
 
         comparison_handles = None
         comparison_labels = None
@@ -477,6 +584,7 @@ def make_big_figure(
             ax3.tick_params(labelbottom=False)
         ax3.set_ylabel(r"$M_k$")
 
+        # Single global legend: top-right panel.
         if row == 0 and comparison_handles is not None and comparison_labels is not None:
             ax3.legend(comparison_handles, comparison_labels, loc="best", frameon=False)
 
@@ -496,9 +604,12 @@ def make_big_figure(
     return fig
 
 
-def parse_dataset_list(raw: str) -> list[str]:
-    if raw.strip().lower() == "all":
-        return list(DATASETS.keys())
+def parse_libsvm_dataset_list(raw: str) -> list[str]:
+    raw = raw.strip().lower()
+    if raw in {"", "none", "no", "false"}:
+        return []
+    if raw == "all":
+        return list(LIBSVM_DATASETS.keys())
 
     out = []
     for item in raw.split(","):
@@ -508,15 +619,49 @@ def parse_dataset_list(raw: str) -> list[str]:
     return out
 
 
+def parse_poisson_list(raw: str) -> list[str]:
+    raw = raw.strip().lower()
+    if raw in {"", "none", "no", "false"}:
+        return []
+    if raw == "all":
+        return ["L1", "L2"]
+
+    out = []
+    for item in raw.split(","):
+        item = item.strip().upper()
+        if item:
+            if item not in POISSON_PROBLEMS:
+                raise ValueError("Poisson choices are L1, L2, all, or none.")
+            out.append(item)
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run a bundle of RelSC D-optimal LIBSVM experiments."
+        description="Run bundled experiments with one selectable problem family: D-opt, Poisson L1, Poisson L2, or all."
+    )
+    parser.add_argument(
+        "--problem",
+        type=str,
+        default="all",
+        choices=["all", "dopt", "poisson-l1", "poisson-l2", "poisson-all"],
+        help=(
+            "Which problem family to run. "
+            "'dopt' runs the LIBSVM D-optimal bundle; "
+            "'poisson-l1' runs the Poisson L1 bundle; "
+            "'poisson-l2' runs the Poisson L2 bundle; "
+            "'poisson-all' runs both Poisson bundles; "
+            "'all' runs D-opt + Poisson L1 + Poisson L2."
+        ),
     )
     parser.add_argument(
         "--datasets",
         type=str,
-        default="abalone,bodyfat,mpg,housing",
-        help="Comma-separated subset among abalone,bodyfat,mpg,housing, or 'all'.",
+        default="all",
+        help=(
+            "LIBSVM D-optimal subset among abalone,bodyfat,mpg,housing, 'all', or 'none'. "
+            "Used only when --problem is dopt or all."
+        ),
     )
     parser.add_argument(
         "--data-dir",
@@ -533,7 +678,7 @@ def main() -> None:
         "--mu",
         type=float,
         default=1e-4,
-        help="Relative strong convexity added as f <- f + mu * h.",
+        help="Relative strong convexity added to LIBSVM D-optimal rows as f <- f + mu * h.",
     )
     parser.add_argument(
         "--maxitrs",
@@ -573,7 +718,7 @@ def main() -> None:
     parser.add_argument(
         "--save-dir",
         type=Path,
-        default=Path("figures_libsvm_bundle"),
+        default=Path("figures_bundle"),
         help="Directory where the combined figure is saved.",
     )
     parser.add_argument(
@@ -586,7 +731,7 @@ def main() -> None:
         "--row-height",
         type=float,
         default=2.35,
-        help="Height in inches per dataset row. Increase this if panels are still too wide.",
+        help="Height in inches per experiment row. Increase this if panels are still too wide.",
     )
     parser.add_argument(
         "--panel-aspect",
@@ -607,18 +752,52 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    dataset_keys = parse_dataset_list(args.datasets)
+    problem = args.problem.lower()
+
+    if problem in {"dopt", "all"}:
+        libsvm_keys = parse_libsvm_dataset_list(args.datasets)
+    else:
+        libsvm_keys = []
+
+    if problem == "all":
+        poisson_keys = ["L1", "L2"]
+    elif problem == "poisson-all":
+        poisson_keys = ["L1", "L2"]
+    elif problem == "poisson-l1":
+        poisson_keys = ["L1"]
+    elif problem == "poisson-l2":
+        poisson_keys = ["L2"]
+    else:
+        poisson_keys = []
+
+    if not libsvm_keys and not poisson_keys:
+        raise ValueError(
+            "No experiments selected. Use --problem dopt, poisson-l1, poisson-l2, poisson-all, or all."
+        )
+
     plot_itrs = args.debug_itrs if args.debug else args.maxitrs
     run_itrs_for_logging = run_length(plot_itrs, args.run_factor)
     verbskip = max(1, min(1000, run_itrs_for_logging // 5 if run_itrs_for_logging >= 5 else 1))
 
-    results: list[DatasetResult] = []
-    for dataset_key in dataset_keys:
-        filename = ensure_dataset(dataset_key, args.data_dir, download=args.download)
-        result = run_one_dataset(
+    results: list[ExperimentResult] = []
+
+    for dataset_key in libsvm_keys:
+        filename = ensure_libsvm_dataset(dataset_key, args.data_dir, download=args.download)
+        result = run_one_libsvm_dataset(
             dataset_key=dataset_key,
             filename=filename,
             mu=args.mu,
+            plot_itrs=plot_itrs,
+            run_factor=args.run_factor,
+            restart=args.restart,
+            restart_rule=args.restart_rule,
+            verbskip=verbskip,
+        )
+        results.append(result)
+
+    for poisson_key in poisson_keys:
+        result = run_one_poisson_problem(
+            kind=poisson_key,
             plot_itrs=plot_itrs,
             run_factor=args.run_factor,
             restart=args.restart,
@@ -636,12 +815,15 @@ def main() -> None:
 
     suffix = "debug" if args.debug else f"{plot_itrs}shown_{args.run_factor:g}xrun"
     restart_suffix = f"{args.restart_rule}RS" if args.restart else "noRS"
-    dataset_suffix = "_".join(dataset_keys)
-    out_base = args.save_dir / f"bundle_square_{dataset_suffix}_relSC_mu{args.mu:g}_{restart_suffix}_{suffix}"
+    libsvm_suffix = "_".join(libsvm_keys) if libsvm_keys else "noDopt"
+    poisson_suffix = "_".join(poisson_keys) if poisson_keys else "noPoisson"
+    out_base = (
+        args.save_dir
+        / f"bundle_square_{problem}_{libsvm_suffix}_{poisson_suffix}_mu{args.mu:g}_{restart_suffix}_{suffix}"
+    )
     formats = [fmt.strip() for fmt in args.formats.split(",") if fmt.strip()]
 
-    if args.save_dir is not None:
-        save_figure_formats(fig, out_base, formats)
+    save_figure_formats(fig, out_base, formats)
 
     if args.no_show:
         plt.close(fig)
